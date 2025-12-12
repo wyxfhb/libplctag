@@ -35,7 +35,7 @@
 
 #include "memory.h"
 #include "utils.h"
-#include "log.h"
+#include "../../utils/log.h"
 #include <stdlib.h>
 
 /*
@@ -48,7 +48,7 @@
  */
 extern void *mem_alloc(int size) {
     if(size <= 0) {
-        log_info("WARN: Allocation size must be greater than zero bytes!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Allocation size must be greater than zero bytes!");
         return NULL;
     }
 
@@ -65,7 +65,7 @@ extern void *mem_alloc(int size) {
  */
 extern void *mem_realloc(void *orig, int size) {
     if(size <= 0) {
-        log_info("WARN: New allocation size must be greater than zero bytes!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "New allocation size must be greater than zero bytes!");
         return NULL;
     }
 
@@ -91,12 +91,12 @@ extern void mem_free(const void *mem) {
  */
 extern void mem_set(void *dest, int c, int size) {
     if(!dest) {
-        log_info("WARN: Destination pointer is NULL!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Destination pointer is NULL!");
         return;
     }
 
     if(size <= 0) {
-        log_info("WARN: Size to set must be a positive number!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Size to set must be a positive number!");
         return;
     }
 
@@ -112,17 +112,17 @@ extern void mem_set(void *dest, int c, int size) {
  */
 extern void mem_copy(void *dest, void *src, int size) {
     if(!dest) {
-        log_info("WARN: Destination pointer is NULL!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Destination pointer is NULL!");
         return;
     }
 
     if(!src) {
-        log_info("WARN: Source pointer is NULL!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Source pointer is NULL!");
         return;
     }
 
     if(size < 0) {
-        log_info("WARN: Size to copy must be a positive number!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Size to copy must be a positive number!");
         return;
     }
 
@@ -143,17 +143,17 @@ extern void mem_copy(void *dest, void *src, int size) {
  */
 extern void mem_move(void *dest, void *src, int size) {
     if(!dest) {
-        log_info("WARN: Destination pointer is NULL!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Destination pointer is NULL!");
         return;
     }
 
     if(!src) {
-        log_info("WARN: Source pointer is NULL!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Source pointer is NULL!");
         return;
     }
 
     if(size < 0) {
-        log_info("WARN: Size to move must be a positive number!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Size to move must be a positive number!");
         return;
     }
 

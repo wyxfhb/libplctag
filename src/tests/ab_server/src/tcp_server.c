@@ -32,13 +32,13 @@
  ***************************************************************************/
 
 #include "tcp_server.h"
-#include "err.h"
+#include "../../utils/err.h"
 #include "plc.h"
 #include "slice.h"
 #include "socket.h"
 #include "thread.h"
 #include "utils.h"
-#include "log.h"
+#include "../../utils/log.h"
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -80,7 +80,7 @@ tcp_server_p tcp_server_create(const char *host, const char *port,
         if(sock >= 0) {
             server->sock_fd = sock;
         } else {
-            log_error("ERROR: Unable to open TCP socket, error: %s", err_to_string((int)sock));
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "ERROR: Unable to open TCP socket, error: %s", util_err_str((util_err_t)(int)sock));
         }
 
         server->handler = handler;
@@ -95,13 +95,13 @@ void tcp_server_start(tcp_server_p server, volatile sig_atomic_t *terminate) {
     static bool done; /* static so it doesn't go out of scope, since it's passed to sub-threads. */
     done = false;     /* initialised every invocation for logic sake, even though that's once. */
 
-    log_info("Waiting for new client connection.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Waiting for new client connection.");
 
     do {
         SOCKET client_fd = INVALID_SOCKET;
         int accept_status = socket_accept(server->sock_fd, 1000, &client_fd); /* MAGIC */
 
-        if(accept_status == ERR_OK) {
+        if(accept_status == UTIL_OK) {
             struct client_session *session = NULL;
 
             /* The client thread is responsible for freeing these */
@@ -109,14 +109,14 @@ void tcp_server_start(tcp_server_p server, volatile sig_atomic_t *terminate) {
             // FIXME - combine the allocations and use calloc or memset to get zeroed memory
             session = malloc(sizeof(struct client_session));
 
-            if(!session) { log_error("Unable to allocate memory for the session!"); }
+            if(!session) { pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to allocate memory for the session!"); }
 
             // NOLINTNEXTLINE
             memset(session, 0, sizeof(*session));
 
             session->server_context = malloc(server->context_size);
 
-            if(!session->server_context) { log_error("Unable to allocate memory for the server context!"); }
+            if(!session->server_context) { pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to allocate memory for the server context!"); }
 
             /* Make a copy of the server context so the thread can use it without threading concerns. */
             // NOLINTNEXTLINE
@@ -126,13 +126,13 @@ void tcp_server_start(tcp_server_p server, volatile sig_atomic_t *terminate) {
             session->server_done = &done;   /* reference to a flag that any thread can raise (and all must monitor) */
 
             if(thread_create(&(session->thread), conn_handler, 10 * 1024, session) != THREAD_STATUS_OK) {
-                log_error("ERROR: Unable to create connection handler thread!");
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "ERROR: Unable to create connection handler thread!");
             }
-        } else if(accept_status == ERR_SOCKET_TIMEOUT) {
-            log_info("Timed out waiting for new client connection.");
+        } else if(accept_status == UTIL_ETIMEOUT) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Timed out waiting for new client connection.");
             continue;
         } else {
-            log_error("ERROR: Received error, %s, accepting new client connection!", err_to_string(accept_status));
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "ERROR: Received error, %s, accepting new client connection!", util_err_str((util_err_t)accept_status));
             done = true;
         }
 
@@ -167,8 +167,8 @@ THREAD_FUNC(conn_handler) {
     int rc = TCP_SERVER_DONE;
     plc_s *plc = (plc_s *)session->server_context;
 
-    log_info("Got new client connection, going into processing loop.");
-    log_info("server_to_client_max_packet = %zu", plc->server_to_client_max_packet);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Got new client connection, going into processing loop.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "server_to_client_max_packet = %zu", plc->server_to_client_max_packet);
 
     /* no one will join this thread, so clean ourselves up. */
     thread_detach();
@@ -184,11 +184,11 @@ THREAD_FUNC(conn_handler) {
         /* check for errors */
         if(slice_has_err(new_data)) {
             int err = slice_get_err(new_data);
-            if(err == ERR_SOCKET_TIMEOUT) {
-                log_info("Timed out waiting for client to send us a request.");
+            if(err == UTIL_ETIMEOUT) {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Timed out waiting for client to send us a request.");
                 continue;
             } else {
-                log_info("Error, %s, reading data from the client!", err_to_string(err));
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Error, %s, reading data from the client!", util_err_str((util_err_t)err));
                 break;
             }
         }
@@ -197,12 +197,12 @@ THREAD_FUNC(conn_handler) {
         accumulated_data = slice_make(input_buf, slice_len(accumulated_data) + slice_len(new_data));
 
         /* try to process the packet. */
-        log_info("Handler input:");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Handler input:");
         log_info_slice(accumulated_data);
 
         tmp_output = server->handler(accumulated_data, tmp_output, session->server_context);
 
-        log_info("Handler output:");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Handler output:");
         log_info_slice(tmp_output);
 
         /* check the response. */
@@ -210,7 +210,7 @@ THREAD_FUNC(conn_handler) {
             slice_s write_res = socket_write(session->client_fd, tmp_output, 1000); /* MAGIC*/
 
             if(slice_has_err(write_res)) {
-                log_info("Error, %s, writing packet!", err_to_string(slice_get_err(write_res)));
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Error, %s, writing packet!", util_err_str((util_err_t)slice_get_err(write_res)));
                 break;
             }
 
@@ -222,35 +222,35 @@ THREAD_FUNC(conn_handler) {
             accumulated_data = slice_make(input_buf, 0);
             read_target = slice_make(input_buf, sizeof(input_buf));
             tmp_output = slice_make(output_buf, sizeof(output_buf));
-            rc = ERR_TCP_PROCESSED;
+            rc = UTIL_OK;
         } else {
             /* there was some sort of error or exceptional condition. */
             switch((rc = slice_get_err(tmp_output))) {
-                case ERR_TCP_DONE:
+                case UTIL_ECLOSED:
                     /* Connection is done, exit this handler thread but don't shut down the server.
                        The server should continue accepting new connections. */
                     break;
 
-                case ERR_TCP_INCOMPLETE:
+                case UTIL_EAGAIN:
                     /* next read should go after the accumulated data */
                     read_target = slice_from_slice(slice_make(input_buf, sizeof(input_buf)),
                                                    slice_len(accumulated_data),
                                                    sizeof(input_buf) - slice_len(accumulated_data));
                     break;
 
-                case ERR_TCP_PROCESSED: 
+                case UTIL_OK: 
                 
                     break;
 
-                case ERR_TCP_BAD_REQUEST:
-                    log_info("WARN: Bad request!");
+                case UTIL_EINVAL:
+                    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "WARN: Bad request!");
                     log_info_slice(accumulated_data);
                     break;
 
-                default: log_info("WARN: Unsupported return code %d!", rc); break;
+                default: pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "WARN: Unsupported return code %d!", rc); break;
             }
         }
-    } while((rc == ERR_TCP_INCOMPLETE || rc == ERR_TCP_PROCESSED)
+    } while((rc == UTIL_EAGAIN || rc == UTIL_OK)
             && (*(session->server_done) != true)); /* make sure another thread hasn't killed the server */
 
     socket_close(session->client_fd);

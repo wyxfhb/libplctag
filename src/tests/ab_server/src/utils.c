@@ -34,7 +34,7 @@
 #include "utils.h"
 #include "compat.h"
 #include "plc.h"
-#include "log.h"
+#include "../../utils/log.h"
 #include <errno.h>
 #include <math.h>
 #include <stdarg.h>
@@ -265,48 +265,6 @@ void slice_dump(slice_s s) {
 }
 
 
-/* new logging API functions for slices */
-
-void log_slice_impl_func(const char *func, int line, log_level_t lvl, slice_s s) {
-    size_t max_row, row, column;
-    char row_buf[300]; /* MAGIC */
-
-    /* determine the number of rows we will need to print. */
-    max_row = (slice_len(s) + (COLUMNS - 1)) / COLUMNS;
-
-    /* diagnostic: log the slice length */
-    fprintf(stderr, "[DEBUG] log_slice_impl_func called: func=%s, line=%d, lvl=%d, slice_len=%zu, max_row=%zu\n",
-            func, line, lvl, slice_len(s), max_row);
-
-    for(row = 0; row < max_row; row++) {
-        size_t offset = (row * COLUMNS);
-        size_t row_offset;
-
-        /* print the prefix and address */
-        // NOLINTNEXTLINE
-        row_offset = (size_t)snprintf(&row_buf[0], sizeof(row_buf), "%03zu", offset);
-
-        for(column = 0; column < COLUMNS && ((row * COLUMNS) + column) < slice_len(s) && row_offset < (int)sizeof(row_buf);
-            column++) {
-            offset = (row * COLUMNS) + column;
-            row_offset +=
-                // NOLINTNEXTLINE
-                (size_t)snprintf(&row_buf[row_offset], sizeof(row_buf) - row_offset, " %02x", slice_get_uint8(s, offset));
-        }
-
-        /* zero terminate */
-        if(row_offset < sizeof(row_buf)) {
-            row_buf[row_offset] = (char)0;
-        } else {
-            /* this might truncate the string, but it is safe. */
-            row_buf[sizeof(row_buf) - 1] = (char)0;
-        }
-
-        /* output it, finally - use the caller's function and line number */
-        log_impl(func, line, lvl, row_buf);
-    }
-}
-
 /* FIXME - move this all over into a compatibility/platform check header */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #    include <stdlib.h>
@@ -358,3 +316,83 @@ uint64_t random_u64(uint64_t upper_bound) {
 #else
 #    error "Platform not supported!"
 #endif
+
+
+/* Logging implementation for slice and CIP error responses */
+
+void log_slice_impl_func(const char *func, int line, log_level_t lvl, slice_s s) {
+    if (!log_is_enabled(LOG_MODULE_AB_SERVER, lvl)) {
+        return;
+    }
+
+    if (!s.data || s.len == 0) {
+        pdlog(LOG_MODULE_AB_SERVER, lvl, "%s:%d - Empty slice", func, line);
+        return;
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, lvl, "%s:%d - Slice data (len=%zu):", func, line, s.len);
+
+    /* Print the slice data as hex and ASCII */
+    const size_t bytes_per_line = 16;
+    for (size_t offset = 0; offset < s.len; offset += bytes_per_line) {
+        size_t remaining = s.len - offset;
+        size_t line_len = remaining < bytes_per_line ? remaining : bytes_per_line;
+
+        /* Print hex */
+        char hex_buf[256];
+        char *hex_ptr = hex_buf;
+        for (size_t i = 0; i < line_len; i++) {
+            hex_ptr += snprintf(hex_ptr, hex_buf + sizeof(hex_buf) - hex_ptr, "%02x ", s.data[offset + i]);
+        }
+
+        /* Print ASCII */
+        char ascii_buf[256];
+        char *ascii_ptr = ascii_buf;
+        for (size_t i = 0; i < line_len; i++) {
+            uint8_t c = s.data[offset + i];
+            ascii_ptr += snprintf(ascii_ptr, ascii_buf + sizeof(ascii_buf) - ascii_ptr, "%c", (c >= 32 && c < 127) ? c : '.');
+        }
+
+        pdlog(LOG_MODULE_AB_SERVER, lvl, "  %04zx: %-48s %s", offset, hex_buf, ascii_buf);
+    }
+}
+
+
+slice_s make_cip_pdlog(log_module_t module, log_level_t level, slice_s output, uint8_t cip_service, uint16_t error_code, bool is_extended, uint16_t extended_code) {
+    /* Log the error */
+    if (is_extended) {
+        pdlog(module, level, "CIP Error: service=0x%02x error=0x%04x (extended) extended_error=0x%04x", cip_service, error_code, extended_code);
+    } else {
+        pdlog(module, level, "CIP Error: service=0x%02x error=0x%02x", cip_service, (uint8_t)error_code);
+    }
+
+    /* Build CIP error response header */
+    #define CIP_RESPONSE_HEADER_SIZE 4
+    #define CIP_DONE 0x80
+
+    if (slice_len(output) < CIP_RESPONSE_HEADER_SIZE) {
+        /* Not enough space for error response */
+        return slice_make_err(-1);
+    }
+
+    slice_s response_header = slice_from_slice(output, 0, CIP_RESPONSE_HEADER_SIZE);
+
+    /* Build header: service | done, reserved, status, extended_error_size */
+    slice_set_uint8(response_header, 0, cip_service | CIP_DONE);
+    slice_set_uint8(response_header, 1, 0);  /* reserved */
+    slice_set_uint8(response_header, 2, (uint8_t)error_code);  /* status */
+
+    if (is_extended) {
+        slice_set_uint8(response_header, 3, 2);  /* extended error size (in words) */
+
+        /* Add extended error code if there's space */
+        if (slice_len(output) >= CIP_RESPONSE_HEADER_SIZE + 2) {
+            slice_set_uint16_le(output, CIP_RESPONSE_HEADER_SIZE, extended_code);
+            return slice_from_slice(output, 0, CIP_RESPONSE_HEADER_SIZE + 2);
+        }
+    } else {
+        slice_set_uint8(response_header, 3, 0);  /* no extended error */
+    }
+
+    return slice_from_slice(output, 0, CIP_RESPONSE_HEADER_SIZE);
+}

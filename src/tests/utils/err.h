@@ -34,6 +34,9 @@ typedef enum {
     UTIL_ERESOURCE,     // resource exhausted
     UTIL_ETIMEOUT,      // operation timed out
     UTIL_EWRITE,        // write failed
+    UTIL_ESOCKET,       // socket creation failed
+    UTIL_EACCEPT,       // socket accept failed
+    UTIL_EWAIT,         // socket wait/event notification failed
     UTIL_EARGS_MISSING_REQUIRED,  // required flag not provided
     UTIL_EARGS_UNKNOWN_FLAG,      // unknown flag provided
     UTIL_EARGS_INVALID_VALUE,     // value failed to parse

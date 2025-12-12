@@ -31,6 +31,9 @@ const char* util_err_str(util_err_t e) {
         case UTIL_ERESOURCE:    return "Out of resources (memory, etc.)";
         case UTIL_ETIMEOUT:     return "Operation timed out";
         case UTIL_EWRITE:       return "Write failed";
+        case UTIL_ESOCKET:      return "Socket creation failed";
+        case UTIL_EACCEPT:      return "Socket accept failed";
+        case UTIL_EWAIT:        return "Socket wait/event notification failed";
         case UTIL_EARGS_MISSING_REQUIRED: return "Required flag not provided";
         case UTIL_EARGS_UNKNOWN_FLAG:     return "Unknown flag provided";
         case UTIL_EARGS_INVALID_VALUE:    return "Value failed to parse";

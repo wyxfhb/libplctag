@@ -11,15 +11,28 @@ endif()
 
 # Define the source files for ab_server
 set(AB_SERVER_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/cip.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/cip.h
+    # Ethernet/IP Protocol Implementation
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip_common.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip_common.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip_omron.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip_omron.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip_logix.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cip_logix.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cpf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/cpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/eip.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/ethernet_ip/eip.h
+
+    # PLC-Specific Implementations
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/plcs/omron_plc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/plcs/omron_plc.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/plcs/controllogix_plc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/plcs/controllogix_plc.h
+
+    # Core Infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/compat.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/cpf.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/cpf.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/eip.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/eip.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/err.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/err.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/fairness.c
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/fairness.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/main.c
@@ -39,8 +52,15 @@ set(AB_SERVER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/thread.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/utils.c
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/utils.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/log.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/log.h
+
+    # Shared utilities from src/tests/utils
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/buf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/buf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/err.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/err.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/log.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/log.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/log_modules.def
 )
 
 # Add ab_server executable

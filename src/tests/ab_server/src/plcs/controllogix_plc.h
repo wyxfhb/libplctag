@@ -31,27 +31,23 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-/*
- * X-macro list of all log modules.
- * To add a new module, simply add a new LOG_MODULE_ENTRY line here.
- * 
- * Format: LOG_MODULE_ENTRY(name, bit_position)
- * 
- * The name will be used to create LOG_MODULE_<name> constants.
- * The bit_position should be unique (0-63) and determines the bit in the mask.
- */
+#pragma once
 
-LOG_MODULE_ENTRY(SOCKET,                0)
-LOG_MODULE_ENTRY(REACTOR,               1)
-LOG_MODULE_ENTRY(FSM,                   2)
-LOG_MODULE_ENTRY(ARGS,                  3)
-LOG_MODULE_ENTRY(BUF,                   4)
-LOG_MODULE_ENTRY(UTILS,                 5)
-LOG_MODULE_ENTRY(MODBUS_PROTOCOL,       6)
-LOG_MODULE_ENTRY(MODBUS_SERVER,         7)
-LOG_MODULE_ENTRY(REGISTER_STORAGE,      8)
-LOG_MODULE_ENTRY(CONFIG,                9)
-LOG_MODULE_ENTRY(CORO_NET,              10)
-LOG_MODULE_ENTRY(MODBUS_CORO_CLIENT,    11)
-LOG_MODULE_ENTRY(MODBUS_CORO_LISTENER,  12)
-LOG_MODULE_ENTRY(AB_SERVER,              13)
+#include "../plc.h"
+
+/**
+ * controllogix_get_dispatcher - Get the ControlLogix PLC dispatcher
+ *
+ * Returns a pointer to the dispatcher structure for ControlLogix PLCs.
+ * This is called during initialization to set up the PLC type-specific
+ * protocol handlers.
+ *
+ * ControlLogix-specific features:
+ * - Service 0x4C for standard read operations
+ * - Service 0x52 for fragmented/continuation read operations
+ * - Service 0x4D for standard write operations
+ * - Service 0x53 for fragmented/continuation write operations
+ * - Status 0x06 for partial responses (more data available)
+ * - Supports complex data types and structure definitions
+ */
+plc_dispatcher_t* controllogix_get_dispatcher(void);

@@ -49,7 +49,7 @@
 #include "memory.h"
 #include "mutex.h"
 #include "utils.h"
-#include "log.h"
+#include "../../utils/log.h"
 
 
 struct mutex_t {
@@ -67,14 +67,14 @@ int mutex_create(mutex_p *m) {
     pthread_mutexattr_t mutex_attribs;
 #endif
 
-    log_info("DETAIL: Starting.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Starting.");
 
-    if(*m) { log_info("WARN: Called with non-NULL pointer!"); }
+    if(*m) { pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "Called with non-NULL pointer!"); }
 
     *m = (struct mutex_t *)mem_alloc(sizeof(struct mutex_t));
 
     if(!*m) {
-        log_error("ERROR: null mutex pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "null mutex pointer.");
         return MUTEX_ERR_NULL_PTR;
     }
 
@@ -95,7 +95,7 @@ int mutex_create(mutex_p *m) {
 #endif
         mem_free(*m);
         *m = NULL;
-        log_error("ERROR: Error initializing mutex.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Error initializing mutex.");
         return MUTEX_ERR_MUTEX_INIT;
     }
 
@@ -106,7 +106,7 @@ int mutex_create(mutex_p *m) {
     pthread_mutexattr_destroy(&mutex_attribs);
 #endif
 
-    log_info("DETAIL: Done creating mutex %p.", *m);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Done creating mutex %p.", *m);
 
     return MUTEX_STATUS_OK;
 }
@@ -118,10 +118,10 @@ int mutex_lock_impl(const char *func, int line, mutex_p m) {
 #else
 #endif
 
-    log_info("SPEW: locking mutex %p, called from %s:%d.", m, func, line);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_SPEW, "locking mutex %p, called from %s:%d.", m, func, line);
 
     if(!m) {
-        log_info("WARN: null mutex pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null mutex pointer.");
         return MUTEX_ERR_NULL_PTR;
     }
 
@@ -132,12 +132,12 @@ int mutex_lock_impl(const char *func, int line, mutex_p m) {
     while(dwWaitResult != WAIT_OBJECT_0) { dwWaitResult = WaitForSingleObject(m->h_mutex, INFINITE); }
 #else
     if(pthread_mutex_lock(&(m->p_mutex))) {
-        log_info("WARN: error locking mutex.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "error locking mutex.");
         return MUTEX_ERR_MUTEX_LOCK;
     }
 #endif
 
-    // log_info("SPEW: Done.");
+    // pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_SPEW, "Done.");
 
     return MUTEX_STATUS_OK;
 }
@@ -149,10 +149,10 @@ int mutex_try_lock_impl(const char *func, int line, mutex_p m) {
 #else
 #endif
 
-    log_info("SPEW: trying to lock mutex %p, called from %s:%d.", m, func, line);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_SPEW, "trying to lock mutex %p, called from %s:%d.", m, func, line);
 
     if(!m) {
-        log_info("WARN: null mutex pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null mutex pointer.");
         return MUTEX_ERR_NULL_PTR;
     }
 
@@ -164,22 +164,22 @@ int mutex_try_lock_impl(const char *func, int line, mutex_p m) {
 #else
     if(pthread_mutex_trylock(&(m->p_mutex))) {
 #endif
-        log_info("SPEW: error locking mutex.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_SPEW, "error locking mutex.");
         return MUTEX_ERR_MUTEX_LOCK;
     }
     /* else, we got the lock */
 
-    /*log_info("DETAIL: Done.");*/
+    /*pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Done.");*/
 
     return MUTEX_STATUS_OK;
 }
 
 
 int mutex_unlock_impl(const char *func, int line, mutex_p m) {
-    log_info("SPEW: unlocking mutex %p, called from %s:%d.", m, func, line);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_SPEW, "unlocking mutex %p, called from %s:%d.", m, func, line);
 
     if(!m) {
-        log_info("WARN: null mutex pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null mutex pointer.");
         return MUTEX_ERR_NULL_PTR;
     }
 
@@ -190,21 +190,21 @@ int mutex_unlock_impl(const char *func, int line, mutex_p m) {
 #else
     if(pthread_mutex_unlock(&(m->p_mutex))) {
 #endif
-        log_info("WARN: error unlocking mutex.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "error unlocking mutex.");
         return MUTEX_ERR_MUTEX_UNLOCK;
     }
 
-    // log_info("SPEW: Done.");
+    // pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_SPEW, "Done.");
 
     return MUTEX_STATUS_OK;
 }
 
 
 int mutex_destroy(mutex_p *m) {
-    log_info("DETAIL: Starting to destroy mutex %p.", m);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Starting to destroy mutex %p.", m);
 
     if(!m || !*m) {
-        log_info("WARN: null mutex pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null mutex pointer.");
         return MUTEX_ERR_NULL_PTR;
     }
 
@@ -212,7 +212,7 @@ int mutex_destroy(mutex_p *m) {
     CloseHandle((*m)->h_mutex);
 #else
     if(pthread_mutex_destroy(&((*m)->p_mutex))) {
-        log_info("WARN: error while attempting to destroy mutex.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "error while attempting to destroy mutex.");
         return MUTEX_ERR_MUTEX_DESTROY;
     }
 #endif
@@ -221,7 +221,7 @@ int mutex_destroy(mutex_p *m) {
 
     *m = NULL;
 
-    log_info("DETAIL: Done.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Done.");
 
     return MUTEX_STATUS_OK;
 }

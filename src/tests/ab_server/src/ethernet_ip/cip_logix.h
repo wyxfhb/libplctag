@@ -31,27 +31,44 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-/*
- * X-macro list of all log modules.
- * To add a new module, simply add a new LOG_MODULE_ENTRY line here.
- * 
- * Format: LOG_MODULE_ENTRY(name, bit_position)
- * 
- * The name will be used to create LOG_MODULE_<name> constants.
- * The bit_position should be unique (0-63) and determines the bit in the mask.
- */
+#pragma once
 
-LOG_MODULE_ENTRY(SOCKET,                0)
-LOG_MODULE_ENTRY(REACTOR,               1)
-LOG_MODULE_ENTRY(FSM,                   2)
-LOG_MODULE_ENTRY(ARGS,                  3)
-LOG_MODULE_ENTRY(BUF,                   4)
-LOG_MODULE_ENTRY(UTILS,                 5)
-LOG_MODULE_ENTRY(MODBUS_PROTOCOL,       6)
-LOG_MODULE_ENTRY(MODBUS_SERVER,         7)
-LOG_MODULE_ENTRY(REGISTER_STORAGE,      8)
-LOG_MODULE_ENTRY(CONFIG,                9)
-LOG_MODULE_ENTRY(CORO_NET,              10)
-LOG_MODULE_ENTRY(MODBUS_CORO_CLIENT,    11)
-LOG_MODULE_ENTRY(MODBUS_CORO_LISTENER,  12)
-LOG_MODULE_ENTRY(AB_SERVER,              13)
+#include "../plc.h"
+#include "../slice.h"
+
+/**
+ * logix_handle_read_request - Handle ControlLogix-specific read request
+ *
+ * ControlLogix reads use:
+ * - Service 0x4C for initial read
+ * - Service 0x52 for fragmented continuation
+ * - Returns status 0x06 if more data available
+ * - Supports partial responses with offset in payload
+ *
+ * Returns: Response slice
+ */
+slice_s logix_handle_read_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload,
+                                  slice_s output, plc_s *plc);
+
+/**
+ * logix_handle_write_request - Handle ControlLogix-specific write request
+ *
+ * Similar to read but supports fragmentation for writes
+ *
+ * Returns: Response slice
+ */
+slice_s logix_handle_write_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload,
+                                   slice_s output, plc_s *plc);
+
+/**
+ * logix_handle_list_tags - Handle ControlLogix tag enumeration (Service 0x55)
+ *
+ * Handles List Tags Info command for discovering and reading tag metadata.
+ * - Service 0x55 (List Tags Info)
+ * - Returns tag attributes: type, size, dimensions, name
+ * - Supports controller and program-scoped tags
+ *
+ * Returns: Response slice with tag metadata
+ */
+slice_s logix_handle_list_tags(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload,
+                               slice_s output, plc_s *plc);

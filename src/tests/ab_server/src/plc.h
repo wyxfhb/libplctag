@@ -38,6 +38,7 @@
 
 #include "compat.h"
 #include "mutex.h"
+#include "slice.h"
 
 typedef uint16_t tag_type_t;
 
@@ -66,6 +67,10 @@ typedef uint16_t tag_type_t;
 /* Forward declarations for structure types */
 struct member_def_s;
 struct type_def_s;
+struct plc_s;
+
+/* Forward declaration for dispatcher type */
+typedef struct plc_dispatcher_s plc_dispatcher_t;
 
 /* Structure type member definition - for Phase 2 support */
 struct member_def_s {
@@ -101,8 +106,9 @@ struct tag_def_s {
     tag_type_t tag_type;
     size_t elem_size;
     size_t elem_count;
-    uint32_t instance_id;           /* Unique instance ID for Omron tag enumeration (1, 2, 3, ...) */
-    struct type_def_s *type_def;    /* Pointer to structure type if this tag is a UDT (NULL for simple types) */
+    uint32_t instance_id;                /* Unique instance ID for Omron tag enumeration (1, 2, 3, ...) */
+    uint32_t enumeration_instance;       /* Instance ID for ControlLogix Service 0x55 pagination */
+    struct type_def_s *type_def;         /* Pointer to structure type if this tag is a UDT (NULL for simple types) */
     size_t data_file_num;
     size_t num_dimensions;
     size_t dimensions[3];
@@ -112,7 +118,7 @@ struct tag_def_s {
        and types) are expected to be created once, in a single thread. From then on those fields
        are expected to be read-only (even if by multiple threads). */
     mutex_p data_mutex;
-    
+
     /* Fairness tracking - per-request latency statistics */
     atomic_int32_t request_count;
     atomic_int64_t total_latency_us;     /* sum of all request latencies in microseconds */
@@ -132,9 +138,55 @@ typedef enum {
     PLC_MICROLOGIX
 } plc_type_t;
 
+/* PLC-type specific dispatcher for CIP protocol handling */
+typedef struct plc_dispatcher_s {
+    const char *name;
+
+    /* Main CIP dispatcher for this PLC type */
+    slice_s (*dispatch_cip_request)(uint8_t cip_service,
+                                     slice_s cip_service_path,
+                                     slice_s cip_service_payload,
+                                     slice_s output,
+                                     struct plc_s *plc);
+
+    /* Tag read handler */
+    slice_s (*handle_read_tag)(uint8_t cip_service,
+                               slice_s cip_service_path,
+                               slice_s cip_service_payload,
+                               slice_s output,
+                               struct plc_s *plc);
+
+    /* Tag write handler */
+    slice_s (*handle_write_tag)(uint8_t cip_service,
+                                slice_s cip_service_path,
+                                slice_s cip_service_payload,
+                                slice_s output,
+                                struct plc_s *plc);
+
+    /* Get attributes handler (for tag enumeration) */
+    slice_s (*handle_get_attributes)(uint8_t cip_service,
+                                      slice_s cip_service_path,
+                                      slice_s cip_service_payload,
+                                      slice_s output,
+                                      struct plc_s *plc);
+
+    /* Optional: Template enumeration for structures (ControlLogix-specific) */
+    slice_s (*handle_get_template_attributes)(uint8_t cip_service,
+                                               slice_s cip_service_path,
+                                               slice_s cip_service_payload,
+                                               slice_s output,
+                                               struct plc_s *plc);
+    slice_s (*handle_read_template_data)(uint8_t cip_service,
+                                          slice_s cip_service_path,
+                                          slice_s cip_service_payload,
+                                          slice_s output,
+                                          struct plc_s *plc);
+} plc_dispatcher_t;
+
 /* Define the context that is passed around. */
 typedef struct plc_s {
     plc_type_t plc_type;
+    plc_dispatcher_t *dispatcher;    /* PLC-type specific protocol handlers */
     const char* port_str;
     uint8_t path[20];
     uint8_t path_len;

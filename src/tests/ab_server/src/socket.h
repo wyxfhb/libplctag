@@ -34,7 +34,7 @@
 #pragma once
 
 #include "compat.h"
-#include "err.h"
+#include "../../utils/err.h"
 #include "slice.h"
 
 #include <stdint.h>

@@ -31,27 +31,15 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-/*
- * X-macro list of all log modules.
- * To add a new module, simply add a new LOG_MODULE_ENTRY line here.
- * 
- * Format: LOG_MODULE_ENTRY(name, bit_position)
- * 
- * The name will be used to create LOG_MODULE_<name> constants.
- * The bit_position should be unique (0-63) and determines the bit in the mask.
- */
+#pragma once
 
-LOG_MODULE_ENTRY(SOCKET,                0)
-LOG_MODULE_ENTRY(REACTOR,               1)
-LOG_MODULE_ENTRY(FSM,                   2)
-LOG_MODULE_ENTRY(ARGS,                  3)
-LOG_MODULE_ENTRY(BUF,                   4)
-LOG_MODULE_ENTRY(UTILS,                 5)
-LOG_MODULE_ENTRY(MODBUS_PROTOCOL,       6)
-LOG_MODULE_ENTRY(MODBUS_SERVER,         7)
-LOG_MODULE_ENTRY(REGISTER_STORAGE,      8)
-LOG_MODULE_ENTRY(CONFIG,                9)
-LOG_MODULE_ENTRY(CORO_NET,              10)
-LOG_MODULE_ENTRY(MODBUS_CORO_CLIENT,    11)
-LOG_MODULE_ENTRY(MODBUS_CORO_LISTENER,  12)
-LOG_MODULE_ENTRY(AB_SERVER,              13)
+#include "../plc.h"
+
+/**
+ * omron_get_dispatcher - Get the Omron PLC CIP protocol dispatcher
+ *
+ * Returns a pointer to the dispatcher structure for Omron PLCs.
+ * This dispatcher contains all the CIP protocol handlers specific to
+ * Omron NJ/NX series PLCs.
+ */
+plc_dispatcher_t* omron_get_dispatcher(void);

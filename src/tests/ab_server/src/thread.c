@@ -49,7 +49,7 @@
 #include "memory.h"
 #include "thread.h"
 #include "utils.h"
-#include "log.h"
+#include "../../utils/log.h"
 
 
 struct thread_t {
@@ -72,19 +72,19 @@ struct thread_t {
  */
 
 extern int thread_create(thread_p *t, thread_func_t func, int stacksize, void *arg) {
-    log_info("DETAIL: Starting.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Starting.");
 
     (void)stacksize; /* Note: We now set a fixed 1MB stack size on POSIX systems */
 
     if(!t) {
-        log_info("WARN: null thread pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null thread pointer.");
         return THREAD_ERR_NULL_PTR;
     }
 
     *t = (thread_p)mem_alloc(sizeof(struct thread_t));
 
     if(!*t) {
-        log_error("ERROR: Failed to allocate memory for thread.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate memory for thread.");
         return THREAD_ERR_NULL_PTR;
     }
 
@@ -98,7 +98,7 @@ extern int thread_create(thread_p *t, thread_func_t func, int stacksize, void *a
                                   NULL); /* do not need thread ID       */
 
     if(!(*t)->h_thread) {
-        log_info("WARN: error creating thread.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "error creating thread.");
         mem_free(*t);
         *t = NULL;
 
@@ -117,12 +117,12 @@ extern int thread_create(thread_p *t, thread_func_t func, int stacksize, void *a
     pthread_attr_destroy(&attr);
 
     if(rc) {
-        log_error("ERROR: error creating thread.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "error creating thread.");
         return THREAD_ERR_THREAD_CREATE;
     }
 #endif
 
-    log_info("DETAIL: Done.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Done.");
 
     return THREAD_STATUS_OK;
 }
@@ -174,10 +174,10 @@ int thread_join(thread_p t) {
     void *unused;
 #endif
 
-    log_info("DETAIL: Starting.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Starting.");
 
     if(!t) {
-        log_info("WARN: null thread pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null thread pointer.");
         return THREAD_ERR_NULL_PTR;
     }
 
@@ -187,11 +187,11 @@ int thread_join(thread_p t) {
 #else
     if(pthread_join(t->p_thread, &unused)) {
 #endif
-        log_error("ERROR: Error joining thread.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Error joining thread.");
         return THREAD_ERR_THREAD_JOIN;
     }
 
-    log_info("DETAIL: Done.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Done.");
 
     return THREAD_STATUS_OK;
 }
@@ -221,10 +221,10 @@ extern int thread_detach(void) {
  * question must be dead first!
  */
 extern int thread_destroy(thread_p *t) {
-    log_info("DETAIL: Starting.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Starting.");
 
     if(!t || !*t) {
-        log_info("WARN: null thread pointer.");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_WARN, "null thread pointer.");
         return THREAD_ERR_NULL_PTR;
     }
 
@@ -236,7 +236,7 @@ extern int thread_destroy(thread_p *t) {
 
     *t = NULL;
 
-    log_info("DETAIL: Done.");
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Done.");
 
     return THREAD_STATUS_OK;
 }

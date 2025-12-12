@@ -1,0 +1,1402 @@
+/***************************************************************************
+ *   Copyright (C) 2025 by Kyle Hayes                                      *
+ *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
+ *                                                                         *
+ * This software is available under either the Mozilla Public License      *
+ * version 2.0 or the GNU LGPL version 2 (or later) license, whichever     *
+ * you choose.                                                             *
+ *                                                                         *
+ * MPL 2.0:                                                                *
+ *                                                                         *
+ *   This Source Code Form is subject to the terms of the Mozilla Public   *
+ *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
+ *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
+ *                                                                         *
+ *                                                                         *
+ * LGPL 2:                                                                 *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU Library General Public License as       *
+ *   published by the Free Software Foundation; either version 2 of the    *
+ *   License, or (at your option) any later version.                       *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU Library General Public     *
+ *   License along with this program; if not, write to the                 *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
+#include "cip.h"
+#include "cip_common.h"
+#include "eip.h"
+#include "../pccc.h"
+#include "../plc.h"
+#include "../slice.h"
+#include "../utils.h"
+#include "../../../utils/log.h"
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <utils/random_utils.h>
+
+
+/* tag commands */
+#define CIP_SRV_GET_ATTR_ALL ((uint8_t)0x01)
+#define CIP_SRV_MULTI ((uint8_t)0x0a)
+#define CIP_SRV_PCCC_EXECUTE ((uint8_t)0x4b)
+#define CIP_SRV_READ_NAMED_TAG ((uint8_t)0x4c)
+#define CIP_SRV_WRITE_NAMED_TAG ((uint8_t)0x4d)
+#define CIP_SRV_FORWARD_CLOSE ((uint8_t)0x4e)
+#define CIP_SRV_READ_NAMED_TAG_FRAG ((uint8_t)0x52)
+#define CIP_SRV_WRITE_NAMED_TAG_FRAG ((uint8_t)0x53)
+#define CIP_SRV_FORWARD_OPEN ((uint8_t)0x54)
+#define CIP_SRV_INSTANCES_ATTRIBS ((uint8_t)0x55)
+#define CIP_SRV_GET_INSTANCE_LIST ((uint8_t)0x5f)
+#define CIP_SRV_FORWARD_OPEN_EX ((uint8_t)0x5b)
+
+
+/* non-tag commands */
+// 4b 02 20 67 24 01 07 3d f3 45 43 50 21
+//  const uint8_t CIP_PCCC_EXECUTE_OBJ[] = { 0x02, 0x20, 0x67, 0x24, 0x01 };
+//  const uint8_t CIP_PCCC_PREFIX[] = { 0x07, 0x3d, 0xf3, 0x45, 0x43, 0x50, 0x21 };
+//  const uint8_t CIP_FORWARD_CLOSE[] = { 0x4E, 0x02, 0x20, 0x06, 0x24, 0x01 };
+const uint8_t CIP_OBJ_CONNECTION_MANAGER[] = {0x20, 0x06, 0x24, 0x01};
+// const uint8_t CIP_LIST_TAGS[] = { 0x55, 0x02, 0x20, 0x02, 0x24, 0x01 };
+// const uint8_t CIP_FORWARD_OPEN_EX[] = { 0x5B, 0x02, 0x20, 0x06, 0x24, 0x01 };
+
+/* path to match. */
+// uint8_t LOGIX_CONN_PATH[] = { 0x03, 0x00, 0x00, 0x20, 0x02, 0x24, 0x01 };
+// uint8_t MICRO800_CONN_PATH[] = { 0x02, 0x20, 0x02, 0x24, 0x01 };
+
+#define CIP_DONE ((uint8_t)0x80)
+
+#define CIP_SYMBOLIC_SEGMENT_MARKER ((uint8_t)0x91)
+
+/* CIP Errors */
+
+#define CIP_OK ((uint8_t)0x00)
+#define CIP_ERR_EXT_ERR ((uint8_t)0x01)
+#define CIP_ERR_INVALID_PARAM ((uint8_t)0x03)
+#define CIP_ERR_PATH_SEGMENT ((uint8_t)0x04)
+#define CIP_ERR_PATH_DEST_UNKNOWN ((uint8_t)0x05)
+#define CIP_ERR_FRAG ((uint8_t)0x06)
+#define CIP_ERR_UNSUPPORTED ((uint8_t)0x08)
+#define CIP_ERR_INSUFFICIENT_DATA ((uint8_t)0x13)
+#define CIP_ERR_TOO_MUCH_DATA ((uint8_t)0x15)
+#define CIP_ERR_EXTENDED ((uint8_t)0xff)
+
+#define CIP_ERR_EX_DUPLICATE_CONN ((uint16_t)0x0100)
+#define CIP_ERR_EX_INVALID_CONN_SIZE ((uint16_t)0x0109)
+#define CIP_ERR_EX_TOO_LONG ((uint16_t)0x2105)
+
+/* tag and object constants */
+#define CIP_TAG_PATH_MIN ((size_t)(4)) /* 1 byte segment type, 1 byte length count, 1 byte tag name, 1 byte padding */
+#define CIP_OBJ_PATH_MIN ((size_t)(4)) /* 1 byte class type, 1 byte class ID, 1 byte instance type, 1 byte instance ID */
+
+#define CIP_RESPONSE_HEADER_SIZE ((size_t)4)
+#define CIP_RESPONSE_HEADER_EXT_ERR_SIZE ((size_t)6)
+#define CIP_RESPONSE_TYPE_INFO_SIZE ((size_t)2) /* FIXME - this should come from the tag */
+#define CIP_MIN_ATOMIC_ELEMENT_SIZE \
+    ((size_t)8) /* size to use if element size of tag is big.  Prevents splitting of atomic values. */
+
+#define CIP_READ_PAYLOAD_MIN_SIZE ((size_t)2)      /* two bytes for the element count */
+#define CIP_READ_FRAG_PAYLOAD_MIN_SIZE ((size_t)6) /* two bytes for element count, four for byte offset */
+
+#define CIP_WRITE_PAYLOAD_MIN_SIZE ((size_t)5) /* two bytes for the element count, two bytes for type, 1 byte for data */
+#define CIP_WRITE_FRAG_PAYLOAD_MIN_SIZE \
+    ((size_t)9) /* two bytes for element count, four for byte offset, two bytes for type, 1 bytes for data */
+
+#define CIP_TAG_MAX_INDEXES ((uint32_t)3) /* should double check for OMRON */
+
+#define MAX_SUB_PACKETS ((uint16_t)1000) /* maximum number of sub-packets in a multi-service request */
+
+#define CIP_MINIMAL_RESPONSE_SIZE ((size_t)6) /* four bytes for header plus 2 for optional extended status. */
+
+
+
+
+slice_s handle_forward_open(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                   plc_s *plc);
+slice_s handle_forward_close(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                    plc_s *plc);
+slice_s handle_read_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                   plc_s *plc);
+slice_s handle_write_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                    plc_s *plc);
+slice_s handle_get_attribute_all(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                        plc_s *plc);
+slice_s handle_get_instance_list(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                        plc_s *plc);
+
+
+/*
+ * Parse logical segment path: 0x20 <class> 0x24 <instance>
+ * Returns true if successfully parsed, false otherwise.
+ */
+static bool parse_logical_path(slice_s path, uint16_t *class_id, uint32_t *instance_id) {
+    size_t offset = 0;
+    size_t path_len = slice_len(path);
+
+    if (path_len < 4) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Logical path too short: %zu bytes", path_len);
+        return false;
+    }
+
+    /* Parse class segment (0x20 = 8-bit class, 0x21 = 16-bit class) */
+    uint8_t segment_type = slice_get_uint8(path, offset++);
+    if (segment_type == 0x20) {
+        if (offset + 1 > path_len) return false;
+        *class_id = slice_get_uint8(path, offset++);
+    } else if (segment_type == 0x21) {
+        if (offset + 3 > path_len) return false;
+        *class_id = slice_get_uint16_le(path, offset);
+        offset += 3;  /* 2 bytes value + 1 padding */
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Invalid class segment type: 0x%02x", segment_type);
+        return false;
+    }
+
+    /* Parse instance segment (0x24 = 8-bit, 0x25 = 16-bit, 0x26 = 32-bit) */
+    if (offset >= path_len) return false;
+    segment_type = slice_get_uint8(path, offset++);
+    if (segment_type == 0x24) {
+        if (offset + 1 > path_len) return false;
+        *instance_id = slice_get_uint8(path, offset++);
+    } else if (segment_type == 0x25) {
+        if (offset + 3 > path_len) return false;
+        *instance_id = slice_get_uint16_le(path, offset);
+        offset += 3;
+    } else if (segment_type == 0x26) {
+        if (offset + 5 > path_len) return false;
+        *instance_id = slice_get_uint32_le(path, offset);
+        offset += 5;
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Invalid instance segment type: 0x%02x", segment_type);
+        return false;
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Parsed logical path: class=0x%04x, instance=0x%08x", *class_id, *instance_id);
+    return true;
+}
+
+
+/*
+ * Find tag by instance ID.
+ * Returns pointer to tag_def_s if found, NULL otherwise.
+ * 
+ * This does not use a mutex, but the tag list is static during CIP processing.
+ */
+tag_def_s* find_tag_by_instance_id(plc_s *plc, uint32_t instance_id) {
+    tag_def_s *tag = plc->tags;
+    while (tag) {
+        if (tag->instance_id == instance_id) {
+            return tag;
+        }
+        tag = tag->next_tag;
+    }
+    return NULL;
+}
+
+
+/* Find structure type by instance ID */
+static type_def_s* find_type_by_instance_id(plc_s *plc, uint32_t instance_id) {
+    type_def_s *type = plc->types;
+    while (type) {
+        if (type->instance_id == instance_id) {
+            return type;
+        }
+        type = type->next_type;
+    }
+    return NULL;
+}
+
+
+/* Find structure member by instance ID */
+static member_def_s* find_member_by_instance_id(plc_s *plc, uint32_t instance_id) {
+    type_def_s *type = plc->types;
+    while (type) {
+        member_def_s *member = type->members;
+        while (member) {
+            if (member->instance_id == instance_id) {
+                return member;
+            }
+            member = member->next_member;
+        }
+        type = type->next_type;
+    }
+    return NULL;
+}
+
+
+slice_s cip_dispatch_request(slice_s input, slice_s output, plc_s *plc) {
+    uint8_t cip_service = 0;
+    slice_s cip_service_path = {0};
+    slice_s cip_service_payload = {0};
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Got packet:");
+    log_info_slice(input);
+
+    if(!parse_cip_request(input, &cip_service, &cip_service_path, &cip_service_payload)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to parse CIP request!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP Service: %02x", cip_service);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP Path:");
+    log_info_slice(cip_service_path);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP Payload:");
+    log_info_slice(cip_service_payload);
+
+    /* Dispatch to PLC-type specific handler */
+    if (!plc || !plc->dispatcher || !plc->dispatcher->dispatch_cip_request) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "No dispatcher configured for CIP service 0x%02x", cip_service);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_UNSUPPORTED, false, 0);
+    }
+
+    return plc->dispatcher->dispatch_cip_request(cip_service, cip_service_path, cip_service_payload, output, plc);
+}
+
+
+/* 
+ * Handle multi-service requests (service 0x0a)
+ * 
+ * We have to unpack and dispatch each sub-request, then repack the responses.
+ */
+/* a handy structure to hold all the parameters we need to receive in a Forward Open request. */
+typedef struct {
+    uint8_t secs_per_tick;                 /* seconds per tick */
+    uint8_t timeout_ticks;                 /* timeout = srd_secs_per_tick * src_timeout_ticks */
+    uint32_t server_conn_id;               /* 0, returned by server in reply. */
+    uint32_t client_conn_id;               /* sent by client. */
+    uint16_t conn_serial_number;           /* client connection ID/serial number */
+    uint16_t orig_vendor_id;               /* client unique vendor ID */
+    uint32_t orig_serial_number;           /* client unique serial number */
+    uint8_t conn_timeout_multiplier;       /* timeout = mult * RPI */
+    uint8_t reserved[3];                   /* reserved, set to 0 */
+    uint32_t client_to_server_rpi;         /* us to target RPI - Request Packet Interval in microseconds */
+    uint32_t client_to_server_conn_params; /* some sort of identifier of what kind of PLC we are??? */
+    uint32_t server_to_client_rpi;         /* target to us RPI, in microseconds */
+    uint32_t server_to_client_conn_params; /* some sort of identifier of what kind of PLC the target is ??? */
+    uint8_t transport_class;               /* ALWAYS 0xA3, server transport, class 3, application trigger */
+    slice_s path;                          /* connection path. */
+} forward_open_s;
+
+/* the minimal Forward Open with no path */
+#define CIP_FORWARD_OPEN_MIN_SIZE (42)
+#define CIP_FORWARD_OPEN_EX_MIN_SIZE (46)
+
+
+slice_s handle_forward_open(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                            plc_s *plc) {
+    slice_s path_payload = {0};
+    slice_s conn_path_slice = {0};
+    size_t offset = 0;
+    forward_open_s fo_req = {0};
+
+    if(cip_service == CIP_SRV_FORWARD_OPEN) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Forward Open request.");
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Forward Open Extended request.");
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP service: 0x%02x", cip_service);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP Path:");
+    log_info_slice(cip_service_path);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP Payload:");
+    log_info_slice(cip_service_payload);
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "output buffer size: %zu", slice_len(output));
+    
+
+    if(!slice_match_data_exact(cip_service_path, CIP_OBJ_CONNECTION_MANAGER, sizeof(CIP_OBJ_CONNECTION_MANAGER))) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Open service requested from wrong object!");
+        log_info_slice(cip_service_path);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_UNSUPPORTED, false, 0);
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Open service requested of Connection Manager Object instance 1.");
+    }
+
+    /* start parsing */
+    offset = 0;
+
+    /* get the data. */
+    fo_req.secs_per_tick = slice_get_uint8(cip_service_payload, offset);
+    offset++;
+    fo_req.timeout_ticks = slice_get_uint8(cip_service_payload, offset);
+    offset++;
+    fo_req.server_conn_id = slice_get_uint32_le(cip_service_payload, offset);
+    offset += 4;
+    fo_req.client_conn_id = slice_get_uint32_le(cip_service_payload, offset);
+    offset += 4;
+    fo_req.conn_serial_number = slice_get_uint16_le(cip_service_payload, offset);
+    offset += 2;
+    fo_req.orig_vendor_id = slice_get_uint16_le(cip_service_payload, offset);
+    offset += 2;
+    fo_req.orig_serial_number = slice_get_uint32_le(cip_service_payload, offset);
+    offset += 4;
+    fo_req.conn_timeout_multiplier = slice_get_uint8(cip_service_payload, offset);
+    offset += 4; /* byte plus 3-bytes of padding. */
+    fo_req.client_to_server_rpi = slice_get_uint32_le(cip_service_payload, offset);
+    offset += 4;
+
+    if(cip_service == CIP_SRV_FORWARD_OPEN) {
+        /* old command uses 16-bit value. */
+        fo_req.client_to_server_conn_params = slice_get_uint16_le(cip_service_payload, offset);
+        offset += 2;
+    } else {
+        /* new command has 32-bit field here. */
+        fo_req.client_to_server_conn_params = slice_get_uint32_le(cip_service_payload, offset);
+        offset += 4;
+    }
+
+    fo_req.server_to_client_rpi = slice_get_uint32_le(cip_service_payload, offset);
+    offset += 4;
+    if(cip_service == CIP_SRV_FORWARD_OPEN) {
+        /* old command uses 16-bit value. */
+        fo_req.server_to_client_conn_params = slice_get_uint16_le(cip_service_payload, offset);
+        offset += 2;
+    } else {
+        /* new command has 32-bit field here. */
+        fo_req.server_to_client_conn_params = slice_get_uint32_le(cip_service_payload, offset);
+        offset += 4;
+    }
+
+    fo_req.transport_class = slice_get_uint8(cip_service_payload, offset);
+    offset++;
+
+    /* did we run out of bounds? */
+    if(offset > slice_len(cip_service_payload)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Not enough Forward Open service data!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+    }
+
+    /* Get the connection path */
+    path_payload = slice_from_slice(cip_service_payload, offset, slice_len(cip_service_payload));
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Open path payload:");
+    log_info_slice(path_payload);
+
+    offset = 0;
+    if(!extract_cip_path(path_payload, &offset, false, &conn_path_slice)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to extract the connection path from the Forward Open request!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Connection path slice:");
+    log_info_slice(conn_path_slice);
+
+    if(!slice_match_data_exact(conn_path_slice, &(plc->path[0]), plc->path_len)) {
+        slice_s plc_path = slice_make(&(plc->path[0]), plc->path_len);
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward open request path did not match the path for this PLC!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "FO path:");
+        log_info_slice(conn_path_slice);
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "PLC path:");
+        log_info_slice(plc_path);
+
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+    }
+
+    /* check to see how many refusals we should do. */
+    if(plc->reject_fo_count > 0) {
+        plc->reject_fo_count--;
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward open request being bounced for debugging. %d to go.", plc->reject_fo_count);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_EXT_ERR, true, CIP_ERR_EX_DUPLICATE_CONN);
+    }
+
+    /* all good if we got here. */
+    plc->client_connection_id = fo_req.client_conn_id;
+    plc->client_connection_serial_number = fo_req.conn_serial_number;
+    plc->client_vendor_id = fo_req.orig_vendor_id;
+    plc->client_serial_number = fo_req.orig_serial_number;
+    plc->client_to_server_rpi = fo_req.client_to_server_rpi;
+    plc->server_to_client_rpi = fo_req.server_to_client_rpi;
+    plc->server_connection_id = (uint32_t)(random_u64(UINT32_MAX) + 1);
+    plc->server_connection_seq = (uint16_t)(random_u64(UINT16_MAX) + 1);
+
+    /* store the allowed packet sizes. */
+    plc->client_to_server_max_packet =
+        fo_req.client_to_server_conn_params & ((cip_service == CIP_SRV_FORWARD_OPEN) ? 0x1FF : 0x0FFF);
+    plc->server_to_client_max_packet =
+        fo_req.server_to_client_conn_params & ((cip_service == CIP_SRV_FORWARD_OPEN) ? 0x1FF : 0x0FFF);
+
+    /* FIXME - check that the packet sizes are valid 508 or 4002 */
+
+    /* now process the FO and respond. */
+    offset = 0;
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);
+    offset++;
+    slice_set_uint8(output, offset, 0);
+    offset++; /* padding/reserved. */
+    slice_set_uint8(output, offset, 0);
+    offset++; /* no error. */
+    slice_set_uint8(output, offset, 0);
+    offset++; /* no extra error fields. */
+
+    slice_set_uint32_le(output, offset, plc->server_connection_id);
+    offset += 4;
+    slice_set_uint32_le(output, offset, plc->client_connection_id);
+    offset += 4;
+    slice_set_uint16_le(output, offset, plc->client_connection_serial_number);
+    offset += 2;
+    slice_set_uint16_le(output, offset, plc->client_vendor_id);
+    offset += 2;
+    slice_set_uint32_le(output, offset, plc->client_serial_number);
+    offset += 4;
+    slice_set_uint32_le(output, offset, plc->client_to_server_rpi);
+    offset += 4;
+    slice_set_uint32_le(output, offset, plc->server_to_client_rpi);
+    offset += 4;
+
+    /* not sure what these do... */
+    slice_set_uint8(output, offset, 0);
+    offset++;
+    slice_set_uint8(output, offset, 0);
+    offset++;
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Open response completed, size %zu bytes", offset);
+    log_info_slice(slice_from_slice(output, 0, offset));
+
+    return slice_from_slice(output, 0, offset);
+}
+
+
+/* Forward Close request. */
+typedef struct {
+    uint8_t secs_per_tick;                    /* seconds per tick */
+    uint8_t timeout_ticks;                    /* timeout = srd_secs_per_tick * src_timeout_ticks */
+    uint16_t client_connection_serial_number; /* our connection ID/serial number */
+    uint16_t client_vendor_id;                /* our unique vendor ID */
+    uint32_t client_serial_number;            /* our unique serial number */
+    slice_s path;                             /* path to PLC */
+} forward_close_s;
+
+/* the minimal Forward Open with no path */
+#define CIP_FORWARD_CLOSE_MIN_SIZE (16)
+
+
+slice_s handle_forward_close(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                             plc_s *plc) {
+    slice_s conn_path_slice;
+    size_t offset = 0;
+    forward_close_s fc_req = {0};
+
+    if(!slice_match_data_exact(cip_service_path, CIP_OBJ_CONNECTION_MANAGER, sizeof(CIP_OBJ_CONNECTION_MANAGER))) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Open service requested from wrong object!");
+        log_info_slice(cip_service_path);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_UNSUPPORTED, false, 0);
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Close service requested of Connection Manager Object instance 1.");
+    }
+
+    /* minimum length check */
+    if(slice_len(cip_service_payload) < CIP_FORWARD_CLOSE_MIN_SIZE) {
+        /* FIXME - send back the right error. */
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, (uint8_t)CIP_ERR_UNSUPPORTED, false, (uint16_t)0);
+    }
+
+    /* get the data. */
+    offset = 0;
+
+    fc_req.secs_per_tick = slice_get_uint8(cip_service_payload, offset);
+    offset++;
+    fc_req.timeout_ticks = slice_get_uint8(cip_service_payload, offset);
+    offset++;
+    fc_req.client_connection_serial_number = slice_get_uint16_le(cip_service_payload, offset);
+    offset += 2;
+    fc_req.client_vendor_id = slice_get_uint16_le(cip_service_payload, offset);
+    offset += 2;
+    fc_req.client_serial_number = slice_get_uint32_le(cip_service_payload, offset);
+    offset += 4;
+
+    /* check the remaining length */
+    if(offset >= slice_len(cip_service_payload)) {
+        /* FIXME - send back the right error. */
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward close request size, %d, too small.   Should be greater than %d!", slice_len(cip_service_payload), offset);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+    }
+
+    /*
+     * why does Rockwell do this?   The path here is _NOT_ a byte-for-byte copy of the path
+     * that was used to open the connection.  This one is padded with a zero byte after the path
+     * length.
+     */
+
+    if(!extract_cip_path(cip_service_payload, &offset, true, &conn_path_slice)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to extract the connection path from the Forward Close request!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Connection path slice:");
+    log_info_slice(conn_path_slice);
+
+    if(!slice_match_data_exact(conn_path_slice, &(plc->path[0]), plc->path_len)) {
+        slice_s plc_path = slice_make(&(plc->path[0]), plc->path_len);
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Cpen request path did not match the path for this PLC!");
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "FC path:");
+        log_info_slice(conn_path_slice);
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "PLC path:");
+        log_info_slice(plc_path);
+
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+    }
+
+    /* Check the values we got. */
+    if(plc->client_connection_serial_number != fc_req.client_connection_serial_number) {
+        /* FIXME - send back the right error. */
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward close connection serial number, %x, did not match the connection serial number originally passed, %x!",
+             fc_req.client_connection_serial_number, plc->client_connection_serial_number);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+    if(plc->client_vendor_id != fc_req.client_vendor_id) {
+        /* FIXME - send back the right error. */
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward Close client vendor ID, %x, did not match the client vendor ID originally passed, %x!",
+             fc_req.client_vendor_id, plc->client_vendor_id);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+    if(plc->client_serial_number != fc_req.client_serial_number) {
+        /* FIXME - send back the right error. */
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Forward close client serial number, %x, did not match the client serial number originally passed, %x!",
+             fc_req.client_serial_number, plc->client_serial_number);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    /* now process the FClose and respond. */
+    offset = 0;
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);
+    offset++;
+    slice_set_uint8(output, offset, 0);
+    offset++; /* padding/reserved. */
+    slice_set_uint8(output, offset, 0);
+    offset++; /* no error. */
+    slice_set_uint8(output, offset, 0);
+    offset++; /* no extra error fields. */
+
+    slice_set_uint16_le(output, offset, plc->client_connection_serial_number);
+    offset += 2;
+    slice_set_uint16_le(output, offset, plc->client_vendor_id);
+    offset += 2;
+    slice_set_uint32_le(output, offset, plc->client_serial_number);
+    offset += 4;
+
+    /* not sure what these do... */
+    slice_set_uint8(output, offset, 0);
+    offset++;
+    slice_set_uint8(output, offset, 0);
+    offset++;
+
+    return slice_from_slice(output, 0, offset);
+}
+
+
+slice_s handle_read_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                            plc_s *plc) {
+    size_t required_request_payload_size = 0;
+    tag_def_s *tag = NULL;
+    uint32_t num_indexes = CIP_TAG_MAX_INDEXES;
+    uint32_t indexes[CIP_TAG_MAX_INDEXES] = {0};
+    size_t parse_offset = 0;
+    uint16_t request_element_count = 0;
+    size_t request_fragment_start_byte_offset = 0;
+    size_t request_start_byte_offset = 0;
+    size_t request_end_byte_offset = 0;
+    size_t min_data_element_size = 0;
+    slice_s cip_response_header_slice = {0};
+    slice_s cip_response_type_info_slice = {0};
+    slice_s cip_response_payload_slice = {0};
+    size_t copy_size = 0;
+    uint8_t cip_err = CIP_OK;
+    bool needs_fragmentation = false;
+
+    /* what service are we handling? */
+    if(cip_service == CIP_SRV_READ_NAMED_TAG) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Read Named Tag request.");
+        required_request_payload_size = CIP_READ_PAYLOAD_MIN_SIZE;
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Read Named Tag Fragmented request.");
+        required_request_payload_size = CIP_READ_FRAG_PAYLOAD_MIN_SIZE;
+    }
+
+    /* OMRON only supports un-fragmented reads. */
+    if(plc->plc_type == PLC_OMRON && cip_service != CIP_SRV_READ_NAMED_TAG) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Omron PLCs do not support fragmented read CIP service!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_UNSUPPORTED, false, 0);
+    }
+
+    /* check the payload size */
+    if(slice_len(cip_service_payload) < required_request_payload_size) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Insufficient data in the CIP read request payload!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+    }
+
+    /* try to get the tag and indexes from the tag path. */
+    if(!parse_tag_path(cip_service_path, plc, &tag, &num_indexes, &(indexes[0]))) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to parse tag path:");
+        log_info_slice(cip_service_path);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+    
+    /* Record request arrival time for latency tracking */
+    atomic_store_int64(&tag->last_request_time_us, util_time_us());
+
+    /* get the element count and the optional request byte offset. */
+    parse_offset = 0;
+    request_element_count = slice_get_uint16_le(cip_service_payload, parse_offset);
+    parse_offset += 2;
+
+    /* optionally get the request byte offset */
+    if(cip_service == CIP_SRV_READ_NAMED_TAG_FRAG) {
+        request_fragment_start_byte_offset = slice_get_uint32_le(cip_service_payload, parse_offset);
+        parse_offset += 4;
+    }
+
+    if(parse_offset != slice_len(cip_service_payload)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Extra data in the CIP read request payload!");
+        log_info_slice(cip_service_payload);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_TOO_MUCH_DATA, false, 0);
+    }
+
+    /* get the starting offset of the request, checks against tag size. */
+    if(!calculate_request_start_and_end_offsets(tag, num_indexes, indexes, request_element_count, &request_start_byte_offset,
+                                                &request_end_byte_offset)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to calculate the starting offset of the read request!");
+        // FIXME - need other error.
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    /* bump the start offset by the amount we may have already read. */
+    request_start_byte_offset += request_fragment_start_byte_offset;
+
+    /* check the byte offsets */
+    if(request_start_byte_offset > request_end_byte_offset) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Invalid byte offsets in the read request!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    /* what is the minimum amount of data we can send back without breaking an atomic base type? */
+    // FIXME - does this actually work?
+    if(tag->elem_size > CIP_MIN_ATOMIC_ELEMENT_SIZE) {
+        min_data_element_size = CIP_MIN_ATOMIC_ELEMENT_SIZE;
+    } else {
+        min_data_element_size = tag->elem_size;
+    }
+
+    /* check the payload space.  */
+    if(slice_len(output) < (CIP_RESPONSE_HEADER_SIZE + CIP_RESPONSE_TYPE_INFO_SIZE + min_data_element_size)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Insufficient space in the output buffer for the response!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_FRAG, false, 0);
+    }
+
+    /* peel off space for the header and type info and payload. */
+    cip_response_header_slice = slice_from_slice(output, 0, CIP_RESPONSE_HEADER_SIZE);
+    cip_response_type_info_slice = slice_from_slice(output, CIP_RESPONSE_HEADER_SIZE, CIP_RESPONSE_TYPE_INFO_SIZE);
+    cip_response_payload_slice = slice_from_slice(output, CIP_RESPONSE_HEADER_SIZE + CIP_RESPONSE_TYPE_INFO_SIZE,
+                                                  slice_len(output) - (CIP_RESPONSE_HEADER_SIZE + CIP_RESPONSE_TYPE_INFO_SIZE));
+
+    /* make sure we have enough space for at least one element. */
+    if(slice_len(cip_response_payload_slice) < min_data_element_size) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Insufficient space in the output buffer for the response payload!");
+        // FIXME - need other error.
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_EXTENDED, true, CIP_ERR_EX_TOO_LONG);
+    }
+
+    /* we have payload space so how much can we copy? */
+    copy_size = slice_len(cip_response_payload_slice);
+
+    /* find the largest multiple of the min_data_element_size count that fits. */
+    copy_size = (copy_size / min_data_element_size) * min_data_element_size;
+
+    /* make sure we don't copy too much. */
+    if(copy_size > request_end_byte_offset - request_start_byte_offset) {
+        copy_size = request_end_byte_offset - request_start_byte_offset;
+    }
+
+    /* copy the data into the response payload. */
+    critical_block(tag->data_mutex) {
+        if(!slice_copy_data_in(cip_response_payload_slice, tag->data + request_start_byte_offset, copy_size)) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to copy the data into the response payload!");
+            // FIXME - need other error.
+            cip_err = CIP_ERR_INVALID_PARAM;
+            break;
+        }
+    }
+
+    if(cip_err != CIP_OK) { return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, cip_err, false, 0); }
+
+    /* did we fragment? */
+    if(request_start_byte_offset + copy_size < request_end_byte_offset) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Need to fragment read request.");
+        needs_fragmentation = true;
+    }
+
+    /* fill in the CIP response header. */
+    slice_set_uint8(cip_response_header_slice, 0, cip_service | CIP_DONE);
+    slice_set_uint8(cip_response_header_slice, 1, 0);                                             /* reserved */
+    slice_set_uint8(cip_response_header_slice, 2, (needs_fragmentation ? CIP_ERR_FRAG : CIP_OK)); /* status */
+    slice_set_uint8(cip_response_header_slice, 3, 0);                                             /* no extended error */
+
+    /* fill in the tag data type */
+    slice_set_uint16_le(cip_response_type_info_slice, 0, tag->tag_type);
+    
+    /* Calculate and record request latency */
+    int64_t request_start = atomic_load_int64(&tag->last_request_time_us);
+    if (request_start > 0) {
+        int64_t latency = util_time_us() - request_start;
+        atomic_inc_int32(&tag->request_count);
+        atomic_load_int64(&tag->total_latency_us);  /* Need atomic add, use workaround */
+        
+        /* Update min latency */
+        int64_t current_min = atomic_load_int64(&tag->min_latency_us);
+        if (current_min == 0 || latency < current_min) {
+            atomic_store_int64(&tag->min_latency_us, latency);
+        }
+        
+        /* Update max latency */
+        int64_t current_max = atomic_load_int64(&tag->max_latency_us);
+        if (latency > current_max) {
+            atomic_store_int64(&tag->max_latency_us, latency);
+        }
+        
+        /* Add to total - not perfectly atomic but good enough for statistics */
+        int64_t total = atomic_load_int64(&tag->total_latency_us);
+        atomic_store_int64(&tag->total_latency_us, total + latency);
+    }
+
+    /* return the slice used */
+    return slice_from_slice(output, 0,
+                            slice_len(cip_response_header_slice) + slice_len(cip_response_type_info_slice) + copy_size);
+}
+
+
+#define CIP_WRITE_MIN_SIZE (6)
+#define CIP_WRITE_FRAG_MIN_SIZE (10)
+
+
+slice_s handle_write_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                             plc_s *plc) {
+    size_t required_request_payload_size = 0;
+    tag_def_s *tag = NULL;
+    uint32_t num_indexes = CIP_TAG_MAX_INDEXES;
+    uint32_t indexes[CIP_TAG_MAX_INDEXES] = {0};
+    size_t parse_offset = 0;
+    uint16_t request_element_type = 0;
+    uint16_t request_element_count = 0;
+    size_t request_fragment_start_byte_offset = 0;
+    size_t request_start_byte_offset = 0;
+    size_t request_end_byte_offset = 0;
+    uint8_t cip_err = CIP_OK;
+    slice_s write_request_payload_slice = {0};
+    slice_s cip_response_header_slice = {0};
+
+    /* what service are we handling? */
+    if(cip_service == CIP_SRV_WRITE_NAMED_TAG) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Write Named Tag request.");
+        required_request_payload_size = CIP_WRITE_PAYLOAD_MIN_SIZE;
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Write Named Tag Fragmented request.");
+        required_request_payload_size = CIP_WRITE_FRAG_PAYLOAD_MIN_SIZE;
+    }
+
+    /* OMRON only supports un-fragmented reads. */
+    if(plc->plc_type == PLC_OMRON && cip_service != CIP_SRV_WRITE_NAMED_TAG) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Omron PLCs do not support fragmented write CIP service!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_UNSUPPORTED, false, 0);
+    }
+
+    /* we need the tag to do more calculations and checks */
+    if(!parse_tag_path(cip_service_path, plc, &tag, &num_indexes, &(indexes[0]))) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to parse tag path:");
+        log_info_slice(cip_service_path);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+    
+    /* Record request arrival time for latency tracking */
+    atomic_store_int64(&tag->last_request_time_us, util_time_us());
+
+    /* are the number of indexes correct? */
+    if(num_indexes > 0 && num_indexes != tag->num_dimensions) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Wrong number of indexes passed.   Must be zero or %zu indexes.", tag->num_dimensions);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    /* check the payload size */
+    if(slice_len(cip_service_payload) < required_request_payload_size) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Insufficient data in the CIP read request payload!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+    }
+
+    request_element_type = slice_get_uint16_le(cip_service_payload, parse_offset);
+    parse_offset += 2;
+
+    if(request_element_type != tag->tag_type) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request element type does not match tag type!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    /* get the element count and the optional request byte offset. */
+    request_element_count = slice_get_uint16_le(cip_service_payload, parse_offset);
+    parse_offset += 2;
+
+    /* optionally get the request byte offset for this fragment */
+    if(cip_service == CIP_SRV_WRITE_NAMED_TAG_FRAG) {
+        request_fragment_start_byte_offset = (size_t)slice_get_uint32_le(cip_service_payload, parse_offset);
+        parse_offset += 4;
+    }
+
+    /* get a slice for our payload data to write */
+    write_request_payload_slice =
+        slice_from_slice(cip_service_payload, parse_offset, slice_len(cip_service_payload) - parse_offset);
+
+    /* TODO - check the amount of data to write and make sure it does not partially write a primitive/atomic value. */
+
+    /* get the starting offset of the request, and checks tag size. */
+    if(!calculate_request_start_and_end_offsets(tag, num_indexes, indexes, request_element_count, &request_start_byte_offset,
+                                                &request_end_byte_offset)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to calculate the starting or ending offset of the write request!");
+        // FIXME - need other error.
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    /* what is the actual starting byte offset for this specific request which might be a fragment. */
+    request_start_byte_offset += request_fragment_start_byte_offset;
+
+    /* Make sure we are not trying to write too much. */
+    if((slice_len(write_request_payload_slice) + request_start_byte_offset) > request_end_byte_offset) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Too much data in the write request!");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
+    }
+
+    critical_block(tag->data_mutex) {
+        if(!slice_copy_data_out(tag->data + request_start_byte_offset, request_end_byte_offset - request_start_byte_offset,
+                                write_request_payload_slice)) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to copy the data into the tag!");
+            cip_err = CIP_ERR_INVALID_PARAM;
+            break;
+        }
+    }
+
+    if(cip_err != CIP_OK) { return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, cip_err, false, 0); }
+
+    /* peel off space for the header */
+    cip_response_header_slice = slice_from_slice(output, 0, CIP_RESPONSE_HEADER_SIZE);
+
+    /* fill in the CIP response header. */
+    slice_set_uint8(cip_response_header_slice, 0, cip_service | CIP_DONE);
+    slice_set_uint8(cip_response_header_slice, 1, 0);      /* reserved */
+    slice_set_uint8(cip_response_header_slice, 2, CIP_OK); /* status */
+    slice_set_uint8(cip_response_header_slice, 3, 0);      /* no extended error */
+
+    /* peel off space for the header */
+    cip_response_header_slice = slice_from_slice(output, 0, CIP_RESPONSE_HEADER_SIZE);
+
+    /* fill in the CIP response header. */
+    slice_set_uint8(cip_response_header_slice, 0, cip_service | CIP_DONE);
+    slice_set_uint8(cip_response_header_slice, 1, 0); /* reserved */
+    slice_set_uint8(cip_response_header_slice, 2, CIP_OK); /* status */
+    slice_set_uint8(cip_response_header_slice, 3, 0); /* no extended error */
+    
+    /* Calculate and record request latency */
+    int64_t request_start = atomic_load_int64(&tag->last_request_time_us);
+    if (request_start > 0) {
+        int64_t latency = util_time_us() - request_start;
+        atomic_inc_int32(&tag->request_count);
+        
+        /* Update min latency */
+        int64_t current_min = atomic_load_int64(&tag->min_latency_us);
+        if (current_min == 0 || latency < current_min) {
+            atomic_store_int64(&tag->min_latency_us, latency);
+        }
+        
+        /* Update max latency */
+        int64_t current_max = atomic_load_int64(&tag->max_latency_us);
+        if (latency > current_max) {
+            atomic_store_int64(&tag->max_latency_us, latency);
+        }
+        
+        /* Add to total - not perfectly atomic but good enough for statistics */
+        int64_t total = atomic_load_int64(&tag->total_latency_us);
+        atomic_store_int64(&tag->total_latency_us, total + latency);
+    }
+
+    /* return the remaining output space */
+    return cip_response_header_slice;
+}
+
+
+#define CIP_MIN_TAG_PATH_SIZE 2
+
+
+/* we assume that the number of indexes matches that of the tag or is zero */
+
+
+/*
+ * Handle Get Attribute All (Service 0x01)
+ * Used by both Class 0x6A (Tag Name Server) and Class 0x6B (Variable Object)
+ */
+slice_s handle_get_attribute_all(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                 plc_s *plc) {
+    (void)cip_service_payload;  /* Not used in Phase 1 */
+    uint16_t class_id = 0;
+    uint32_t instance_id = 0;
+    size_t offset = 0;
+    size_t path_offset = 0;
+    tag_def_s *tag = NULL;
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Get Attribute All (Service 0x01)");
+
+    /* Check if path starts with symbolic segment (0x91) or logical segment (0x20/0x21) */
+    if (slice_len(cip_service_path) > 0) {
+        uint8_t first_byte = slice_get_uint8(cip_service_path, 0);
+
+        /* Handle symbolic path: 0x91 <name_len> <name> */
+        if (first_byte == 0x91) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Parsing symbolic path for tag lookup");
+
+            if (slice_len(cip_service_path) < 2) {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Symbolic path too short");
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+            }
+
+            path_offset = 1;
+            uint8_t name_len = slice_get_uint8(cip_service_path, path_offset);
+            path_offset++;
+
+            if (path_offset + name_len > slice_len(cip_service_path)) {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Tag name extends beyond path length");
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+            }
+
+            /* Extract tag name and find tag */
+            slice_s tag_name_slice = slice_from_slice(cip_service_path, path_offset, name_len);
+            tag = plc->tags;
+            while (tag) {
+                if (slice_match_string_exact(tag_name_slice, tag->name)) {
+                    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Found tag by name: %s, instance ID: %u", tag->name, tag->instance_id);
+                    break;
+                }
+                tag = tag->next_tag;
+            }
+
+            if (!tag) {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Tag not found");
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+            }
+
+            /* For symbolic paths, we return the variable object metadata */
+            class_id = 0x6B;  /* Variable Object */
+            instance_id = tag->instance_id;
+        } else {
+            /* Parse logical path for Class/Instance addressing */
+            if (!parse_logical_path(cip_service_path, &class_id, &instance_id)) {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to parse logical path");
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+            }
+        }
+    } else {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Empty path");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+    }
+
+    /* Build response header */
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);  /* Reply service */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Reserved */
+    offset++;
+    slice_set_uint8(output, offset, CIP_OK);  /* Status */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Extended status size */
+    offset++;
+
+    /* Handle Class 0x6A (Tag Name Server), Instance 0 */
+    if (class_id == 0x6A && instance_id == 0) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Attribute All for Tag Name Server (Class 0x6A, Instance 0)");
+
+        /* Check output buffer space (4 bytes header + 4 bytes data) */
+        if (offset + 4 > slice_len(output)) {
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+
+        /* Response data: reserved (2 bytes) + tag count (2 bytes) */
+        slice_set_uint16_le(output, offset, 0);  /* Reserved */
+        offset += 2;
+        slice_set_uint16_le(output, offset, (uint16_t)plc->tag_count);  /* Total tag count */
+        offset += 2;
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Tag Name Server - Total tags: %u", plc->tag_count);
+        return slice_from_slice(output, 0, offset);
+    }
+
+    /* Handle Class 0x6B (Variable Object), Instance N */
+    if (class_id == 0x6B) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Attribute All for Variable Object (Class 0x6B, Instance %u)", instance_id);
+
+        /* Find tag by instance ID */
+        tag = find_tag_by_instance_id(plc, instance_id);
+        if (!tag) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Tag with instance ID %u not found", instance_id);
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+        }
+
+        /* Check output buffer space for basic metadata */
+        /* Minimum: 4 (header) + 4 (size) + 1 (type) + 1 (array type) + 1 (dim count) + 1 (padding) + 3 (bit/padding) + 4 (type instance) = 19 bytes */
+        if (offset + 19 > slice_len(output)) {
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+
+        /* Response data for Variable Object */
+        /* Note: Size must be 4 bytes to match aphyt's expected format (reply_data[0:4]) */
+        slice_set_uint32_le(output, offset, (uint32_t)(tag->elem_count * tag->elem_size));  /* Size in bytes */
+        offset += 4;
+
+        slice_set_uint8(output, offset, (uint8_t)tag->tag_type);  /* CIP data type */
+        offset++;
+
+        slice_set_uint8(output, offset, 0);  /* CIP data type of array (0x00 if scalar) */
+        offset++;
+
+        slice_set_uint8(output, offset, (uint8_t)tag->num_dimensions);  /* Array dimension count */
+        offset++;
+
+        slice_set_uint8(output, offset, 0);  /* Padding */
+        offset++;
+
+        /* Add dimension sizes if array */
+        if (tag->num_dimensions > 0) {
+            if (offset + (tag->num_dimensions * 4) > slice_len(output)) {
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+            }
+            for (size_t i = 0; i < tag->num_dimensions; i++) {
+                slice_set_uint32_le(output, offset, (uint32_t)tag->dimensions[i]);
+                offset += 4;
+            }
+        }
+
+        /* Add bit number and padding (16+(dim*4) and 17+(dim*4) in spec) */
+        if (offset + 3 > slice_len(output)) {
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+        slice_set_uint8(output, offset, 0);  /* Bit number (0 for non-BOOL types) */
+        offset++;
+        slice_set_uint16_le(output, offset, 0);  /* Padding/Reserved */
+        offset += 2;
+
+        /* Variable Type Instance ID: set to type instance ID if structure, 0 for simple types */
+        if (offset + 4 > slice_len(output)) {
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+        if (tag->type_def) {
+            /* This tag uses a structure type */
+            slice_set_uint32_le(output, offset, tag->type_def->instance_id);
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Variable Object - Tag: %s, Size: %zu bytes, Type: 0x%04x (structure), Type ID: %u, Dims: %zu",
+                     tag->name, tag->elem_count * tag->elem_size, tag->tag_type, tag->type_def->instance_id, tag->num_dimensions);
+        } else {
+            /* Simple type */
+            slice_set_uint32_le(output, offset, 0);  /* Variable Type Instance ID (0 for simple types) */
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Variable Object - Tag: %s, Size: %zu bytes, Type: 0x%04x, Dims: %zu",
+                     tag->name, tag->elem_count * tag->elem_size, tag->tag_type, tag->num_dimensions);
+        }
+        offset += 4;
+        return slice_from_slice(output, 0, offset);
+    }
+
+    /* Handle Class 0x6C (Variable Type Objects/Structures) - Omron only */
+    if (class_id == 0x6C) {
+        /* Class 0x6C is only supported for Omron PLCs */
+        if (plc->plc_type != PLC_OMRON) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Class 0x6C (Variable Type Objects) is only supported for Omron PLC type");
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+        }
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Attribute All for Variable Type (Class 0x6C, Instance %u)", instance_id);
+
+        /* Try to find structure type */
+        type_def_s *type = find_type_by_instance_id(plc, instance_id);
+        if (type) {
+            /* Response for structure type definition */
+            size_t name_len = strlen(type->name);
+            size_t name_padding = (name_len % 2 == 1) ? 1 : 0;  /* Word alignment */
+
+            /* Calculate response size */
+            size_t response_size = 4 + 4 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 1 + name_len + name_padding + 4 + 4;
+
+            if (offset + response_size > slice_len(output)) {
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+            }
+
+            /* Build response */
+            slice_set_uint32_le(output, offset, (uint32_t)type->size);  /* Size in memory */
+            offset += 4;
+
+            slice_set_uint8(output, offset, 0xA0);  /* CIP data type: Structure */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Array type: not array */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Dimension count: 0 */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Padding */
+            offset++;
+
+            slice_set_uint16_le(output, offset, type->member_count);  /* Number of members */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, 0);  /* Reserved */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, type->crc_code);  /* CRC code */
+            offset += 2;
+
+            slice_set_uint8(output, offset, (uint8_t)name_len);  /* Type name length */
+            offset++;
+
+            /* Type name */
+            uint8_t *name_ptr = slice_get_bytes(output, offset);
+            if (name_ptr) {
+                memcpy(name_ptr, type->name, name_len);
+            }
+            offset += name_len;
+
+            /* Padding if needed */
+            if (name_padding) {
+                slice_set_uint8(output, offset, 0);
+                offset++;
+            }
+
+            /* Next Instance ID (first member, or 0 if no members) */
+            uint32_t first_member_id = type->members ? type->members->instance_id : 0;
+            slice_set_uint32_le(output, offset, first_member_id);
+            offset += 4;
+
+            /* Nesting Variable Type Instance ID (0 for top-level types) */
+            slice_set_uint32_le(output, offset, 0);
+            offset += 4;
+
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Type Definition - Name: %s, Size: %zu, Members: %u, CRC: 0x%04x",
+                     type->name, type->size, type->member_count, type->crc_code);
+
+            return slice_from_slice(output, 0, offset);
+        }
+
+        /* Try to find structure member */
+        member_def_s *member = find_member_by_instance_id(plc, instance_id);
+        if (member) {
+            /* Response for structure member */
+            size_t name_len = strlen(member->name);
+            size_t name_padding = (name_len % 2 == 1) ? 1 : 0;
+
+            size_t response_size = 4 + 4 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 1 + name_len + name_padding + 4 + 4;
+
+            if (offset + response_size > slice_len(output)) {
+                return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+            }
+
+            /* Build response */
+            slice_set_uint32_le(output, offset, (uint32_t)member->member_size);
+            offset += 4;
+
+            slice_set_uint8(output, offset, (uint8_t)member->member_type);
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Array type */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Dimension count */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Padding */
+            offset++;
+
+            slice_set_uint16_le(output, offset, 0);  /* Member count: 0 for leaf */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, 0);  /* Reserved */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, 0);  /* CRC: 0 for members */
+            offset += 2;
+
+            slice_set_uint8(output, offset, (uint8_t)name_len);
+            offset++;
+
+            uint8_t *member_name_ptr = slice_get_bytes(output, offset);
+            if (member_name_ptr) {
+                memcpy(member_name_ptr, member->name, name_len);
+            }
+            offset += name_len;
+
+            if (name_padding) {
+                slice_set_uint8(output, offset, 0);
+                offset++;
+            }
+
+            /* Next Instance ID (next member in chain, or 0 if last) */
+            uint32_t next_member_id = member->next_member ? member->next_member->instance_id : 0;
+            slice_set_uint32_le(output, offset, next_member_id);
+            offset += 4;
+
+            /* Nesting Type Instance ID (0 for primitive members) */
+            slice_set_uint32_le(output, offset, 0);
+            offset += 4;
+
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Member Definition - Name: %s, Type: 0x%04x, Size: %zu, Next: %u",
+                     member->name, member->member_type, member->member_size, next_member_id);
+
+            return slice_from_slice(output, 0, offset);
+        }
+
+        /* Instance ID not found */
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Variable Type instance %u not found", instance_id);
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+    }
+
+    /* Unsupported class */
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unsupported class 0x%02x for Get Attribute All", class_id);
+    return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+}
+
+
+/*
+ * Handle Get Instance List (Service 0x5F) - Omron-specific
+ * Request path: Class 0x6A, Instance 0
+ * Request payload: Start Instance ID (4 bytes) + Count (4 bytes) + Kind (2 bytes)
+ */
+slice_s handle_get_instance_list(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                 plc_s *plc) {
+    uint16_t class_id = 0;
+    uint32_t instance_id = 0;
+    uint32_t start_instance = 0;
+    uint32_t count_requested = 0;
+    uint16_t kind = 0;
+    size_t offset = 0;
+    tag_def_s *tag = NULL;
+    uint16_t count_returned = 0;
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processing Get Instance List (Service 0x5F)");
+
+    /* Parse the logical path to verify it's Class 0x6A, Instance 0 */
+    if (!parse_logical_path(cip_service_path, &class_id, &instance_id)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to parse logical path");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+    }
+
+    if (class_id != 0x6A || instance_id != 0) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Instance List must be directed to Class 0x6A, Instance 0");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+    }
+
+    /* Parse request payload */
+    if (slice_len(cip_service_payload) < 10) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Instance List payload too short");
+        return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+    }
+
+    start_instance = slice_get_uint32_le(cip_service_payload, 0);
+    count_requested = slice_get_uint32_le(cip_service_payload, 4);
+    kind = slice_get_uint16_le(cip_service_payload, 8);
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Instance List: start=%u, count=%u, kind=%u", start_instance, count_requested, kind);
+
+    /* Build response header */
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);  /* Reply service */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Reserved */
+    offset++;
+    slice_set_uint8(output, offset, CIP_OK);  /* Status */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Extended status size */
+    offset++;
+
+    /* Response payload: count (2 bytes) + more flag (1 byte) + reserved (1 byte) + records */
+    size_t count_offset = offset;
+    offset += 2;  /* Will update count later */
+
+    uint8_t more_available = 0;
+    size_t record_offset = offset + 2;  /* Leave space for more flag + reserved */
+
+    /* Iterate through tags to collect matching instances */
+    tag = plc->tags;
+    while (tag && count_returned < count_requested) {
+        /* Filter based on kind: 2 = user variables (not starting with '_') */
+        if (kind == 2 && (tag->name[0] == '_')) {
+            tag = tag->next_tag;
+            continue;
+        }
+
+        /* Skip tags until we reach start_instance */
+        if (tag->instance_id < start_instance) {
+            tag = tag->next_tag;
+            continue;
+        }
+
+        /* Build instance record */
+        size_t name_len = strlen(tag->name);
+        size_t record_size = 2 + 2 + 4 + 1 + name_len;  /* data length + class + instance + name length + name */
+        if (name_len % 2) {
+            record_size++;  /* padding for word alignment */
+        }
+
+        /* Check if record fits */
+        if (record_offset + record_size > slice_len(output)) {
+            more_available = 1;
+            break;
+        }
+
+        /* Write instance record */
+        size_t record_start = record_offset;  /* Tracks start of each named tag record instance */
+        (void)record_start;  /* May be used for future enhanced error handling */
+        slice_set_uint16_le(output, record_offset, (uint16_t)(2 + 2 + 4 + 1 + name_len + (name_len % 2 ? 1 : 0)));  /* Data length */
+        record_offset += 2;
+
+        slice_set_uint16_le(output, record_offset, 0x6B);  /* Class ID (Variable Object) */
+        record_offset += 2;
+
+        slice_set_uint32_le(output, record_offset, tag->instance_id);  /* Instance ID */
+        record_offset += 4;
+
+        slice_set_uint8(output, record_offset, (uint8_t)name_len);  /* Name length */
+        record_offset++;
+
+        /* Copy name */
+        if (!slice_copy_data_in(slice_from_slice(output, record_offset, name_len),
+                                (uint8_t*)tag->name, name_len)) {
+            return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+        record_offset += name_len;
+
+        /* Add padding if name length is odd */
+        if (name_len % 2) {
+            slice_set_uint8(output, record_offset, 0);
+            record_offset++;
+        }
+
+        count_returned++;
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Added instance record: ID=%u, Name=%s", tag->instance_id, tag->name);
+
+        tag = tag->next_tag;
+    }
+
+    /* Write count and more flag */
+    offset = count_offset;
+    slice_set_uint16_le(output, offset, count_returned);
+    offset += 2;
+    slice_set_uint8(output, offset, more_available);
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Reserved */
+    offset++;
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Get Instance List response: returned=%u, more=%u", count_returned, more_available);
+    return slice_from_slice(output, 0, record_offset);
+}
+
+
+#define CIP_MIN_REQUEST_SIZE \
+    4 /*  1 byte for service, 1 byte for service path length in word, 2 bytes for minimal service path. */
+
