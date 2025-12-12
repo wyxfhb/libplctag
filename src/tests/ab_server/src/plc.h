@@ -54,6 +54,7 @@ typedef uint16_t tag_type_t;
 #define TAG_CIP_TYPE_REAL        ((tag_type_t)0x00CA) /* 32–bit floating point value, IEEE format */
 #define TAG_CIP_TYPE_LREAL       ((tag_type_t)0x00CB) /* 64–bit floating point value, IEEE format */
 #define TAG_CIP_TYPE_STRING      ((tag_type_t)0x00D0) /* 88-byte string, with 82 bytes of data, 4-byte count and 2 bytes of padding */
+#define TAG_CIP_TYPE_STRUCT      ((tag_type_t)0x00A0) /* User-defined structure type */
 
 /* PCCC data types.   FIXME */
 #define TAG_PCCC_TYPE_BIT         ((uint8_t)0x85) /* 1-bit boolean value as unsigned 16-bit integer */
@@ -62,12 +63,46 @@ typedef uint16_t tag_type_t;
 #define TAG_PCCC_TYPE_REAL        ((uint8_t)0x8a) /* 32–bit floating point value, IEEE format */
 #define TAG_PCCC_TYPE_STRING      ((uint8_t)0x8d) /* 82-byte string with 2-byte count word. */
 
+/* Forward declarations for structure types */
+struct member_def_s;
+struct type_def_s;
+
+/* Structure type member definition - for Phase 2 support */
+struct member_def_s {
+    struct member_def_s *next_member;       /* Next member in chain (NULL for last) */
+    char *name;                             /* Member name (e.g., "x", "y") */
+    char *member_type_string;               /* Member type string (e.g., "INT", "Point") - for nested type resolution */
+    tag_type_t member_type;                 /* CIP type code (0xC3=INT, 0xC4=DINT, etc., or 0xA0 for structure) */
+    size_t member_size;                     /* Size in bytes */
+    size_t offset_in_struct;                /* Byte offset within parent structure */
+    uint32_t instance_id;                   /* Unique instance ID (Class 0x6C) */
+    size_t alignment;                       /* Alignment requirement (1, 2, 4, 8) */
+    struct type_def_s *nested_type;         /* For structures: pointer to nested type definition (NULL for simple types) */
+};
+
+typedef struct member_def_s member_def_s;
+
+/* User-defined structure type definition - for Phase 2 support */
+struct type_def_s {
+    struct type_def_s *next_type;           /* Next type in linked list */
+    char *name;                             /* Type name (e.g., "MyPoint") */
+    size_t size;                            /* Total size in bytes (with padding) */
+    uint16_t member_count;                  /* Number of members */
+    uint16_t crc_code;                      /* CRC checksum (0x0000 for Phase 2) */
+    uint32_t instance_id;                   /* Unique instance ID (Class 0x6C) */
+    member_def_s *members;                  /* Linked list of members */
+};
+
+typedef struct type_def_s type_def_s;
+
 struct tag_def_s {
     struct tag_def_s *next_tag;
     char *name;
     tag_type_t tag_type;
     size_t elem_size;
     size_t elem_count;
+    uint32_t instance_id;           /* Unique instance ID for Omron tag enumeration (1, 2, 3, ...) */
+    struct type_def_s *type_def;    /* Pointer to structure type if this tag is a UDT (NULL for simple types) */
     size_t data_file_num;
     size_t num_dimensions;
     size_t dimensions[3];
@@ -128,6 +163,14 @@ typedef struct plc_s {
 
     /* response delay */
     int response_delay;
+
+    /* Omron tag enumeration - instance ID tracking */
+    uint32_t next_instance_id;      /* Auto-increment counter for next instance ID */
+    uint32_t tag_count;             /* Total number of tags */
+
+    /* Structure type registry - for Phase 2 support */
+    struct type_def_s *types;       /* Linked list of UDT definitions */
+    uint32_t type_count;            /* Total number of types */
 
     /* list of tags served by this "PLC" */
     struct tag_def_s *tags;

@@ -62,6 +62,8 @@ static void process_args(int argc, const char **argv, plc_s *plc);
 static void parse_path(const char *path, plc_s *plc);
 static void parse_pccc_tag(const char *tag, plc_s *plc);
 static void parse_cip_tag(const char *tag, plc_s *plc);
+static void parse_struct_definition(const char *struct_str, plc_s *plc);
+static void assign_type_instance_ids(plc_s *plc);
 static slice_s request_handler(slice_s input, slice_s output, void *plc);
 
 
@@ -222,6 +224,7 @@ void process_args(int argc, const char **argv, plc_s *plc) {
     /* make sure that the reject FO count is zero. */
     plc->reject_fo_count = 0;
 
+    /* PASS 1: Process --plc= only to set PLC type first (order-independent) */
     for(int i = 0; i < argc; i++) {
         if(strncmp(argv[i], "--plc=", 6) == 0) {
             if(has_plc) {
@@ -329,7 +332,10 @@ void process_args(int argc, const char **argv, plc_s *plc) {
                 usage();
             }
         }
+    }
 
+    /* PASS 1b: Process all other arguments except --tag= (PLC type is now known) */
+    for(int i = 0; i < argc; i++) {
         if(strncmp(argv[i], "--path=", 7) == 0) {
             parse_path(&(argv[i][7]), plc);
             has_path = true;
@@ -337,13 +343,16 @@ void process_args(int argc, const char **argv, plc_s *plc) {
 
         if(strncmp(argv[i], "--port=", 7) == 0) { plc->port_str = &(argv[i][7]); }
 
-        if(strncmp(argv[i], "--tag=", 6) == 0) {
-            if(plc && (plc->plc_type == PLC_PLC5 || plc->plc_type == PLC_SLC || plc->plc_type == PLC_MICROLOGIX)) {
-                parse_pccc_tag(&(argv[i][6]), plc);
+        if(strncmp(argv[i], "--struct=", 9) == 0) {
+            /* Structure types are only supported for Omron PLCs */
+            if (plc && plc->plc_type == PLC_OMRON) {
+                parse_struct_definition(&(argv[i][9]), plc);
             } else {
-                parse_cip_tag(&(argv[i][6]), plc);
+                // NOLINTNEXTLINE
+                fprintf(stderr, "Structure definitions (--struct=) are only supported for Omron PLC type!\n");
+                usage();
             }
-            has_tag = true;
+            continue;
         }
 
         if(strcmp(argv[i], "--debug") == 0) { debug_on(); }
@@ -360,6 +369,25 @@ void process_args(int argc, const char **argv, plc_s *plc) {
                 log_info("Setting response delay to %dms.", atoi(&argv[i][8]));
                 plc->response_delay = atoi(&argv[i][8]);
             }
+        }
+
+        /* Skip --plc= and --tag= in this pass */
+    }
+
+    /* Finalize structure definitions now that all --struct= have been parsed */
+    if (plc) {
+        assign_type_instance_ids(plc);
+    }
+
+    /* PASS 2: Process --tag= arguments (now that structures are finalized) */
+    for(int i = 0; i < argc; i++) {
+        if(strncmp(argv[i], "--tag=", 6) == 0) {
+            if(plc && (plc->plc_type == PLC_PLC5 || plc->plc_type == PLC_SLC || plc->plc_type == PLC_MICROLOGIX)) {
+                parse_pccc_tag(&(argv[i][6]), plc);
+            } else {
+                parse_cip_tag(&(argv[i][6]), plc);
+            }
+            has_tag = true;
         }
     }
 
@@ -412,6 +440,167 @@ void parse_path(const char *path_str, plc_s *plc) {
  *
  * The size field is a single positive integer.
  */
+
+/* Helper function: Get alignment requirement for CIP type */
+static size_t get_type_alignment(tag_type_t type) {
+    switch(type) {
+        case TAG_CIP_TYPE_BOOL:
+        case TAG_CIP_TYPE_SINT:
+        case TAG_CIP_TYPE_USINT:
+            return 1;
+        case TAG_CIP_TYPE_INT:
+        case TAG_CIP_TYPE_UINT:
+            return 2;
+        case TAG_CIP_TYPE_DINT:
+        case TAG_CIP_TYPE_UDINT:
+        case TAG_CIP_TYPE_REAL:
+            return 4;
+        case TAG_CIP_TYPE_LINT:
+        case TAG_CIP_TYPE_ULINT:
+        case TAG_CIP_TYPE_LREAL:
+            return 8;
+        case TAG_CIP_TYPE_STRING:
+            return 2;  /* STRING starts with 2-byte length */
+        default:
+            return 1;
+    }
+}
+
+/* Helper function: Align offset to boundary */
+static size_t align_offset(size_t offset, size_t alignment) {
+    if (alignment == 0) return offset;
+    return (offset + alignment - 1) & ~(alignment - 1);
+}
+
+/* Helper function: Find structure type by name */
+static type_def_s* find_type_by_name(plc_s *plc, const char *name) {
+    type_def_s *type = plc->types;
+    while (type) {
+        if (strcmp(type->name, name) == 0) {
+            return type;
+        }
+        type = type->next_type;
+    }
+    return NULL;
+}
+
+/* Helper function: Map type string to CIP type and size */
+static bool map_type_string_to_cip(const char *type_str, tag_type_t *out_type, size_t *out_size) {
+    if (str_cmp_i(type_str, "SINT") == 0) {
+        *out_type = TAG_CIP_TYPE_SINT;
+        *out_size = 1;
+    } else if (str_cmp_i(type_str, "INT") == 0) {
+        *out_type = TAG_CIP_TYPE_INT;
+        *out_size = 2;
+    } else if (str_cmp_i(type_str, "DINT") == 0) {
+        *out_type = TAG_CIP_TYPE_DINT;
+        *out_size = 4;
+    } else if (str_cmp_i(type_str, "LINT") == 0) {
+        *out_type = TAG_CIP_TYPE_LINT;
+        *out_size = 8;
+    } else if (str_cmp_i(type_str, "USINT") == 0) {
+        *out_type = TAG_CIP_TYPE_USINT;
+        *out_size = 1;
+    } else if (str_cmp_i(type_str, "UINT") == 0) {
+        *out_type = TAG_CIP_TYPE_UINT;
+        *out_size = 2;
+    } else if (str_cmp_i(type_str, "UDINT") == 0) {
+        *out_type = TAG_CIP_TYPE_UDINT;
+        *out_size = 4;
+    } else if (str_cmp_i(type_str, "ULINT") == 0) {
+        *out_type = TAG_CIP_TYPE_ULINT;
+        *out_size = 8;
+    } else if (str_cmp_i(type_str, "REAL") == 0) {
+        *out_type = TAG_CIP_TYPE_REAL;
+        *out_size = 4;
+    } else if (str_cmp_i(type_str, "LREAL") == 0) {
+        *out_type = TAG_CIP_TYPE_LREAL;
+        *out_size = 8;
+    } else if (str_cmp_i(type_str, "STRING") == 0) {
+        *out_type = TAG_CIP_TYPE_STRING;
+        *out_size = 88;
+    } else if (str_cmp_i(type_str, "BOOL") == 0) {
+        *out_type = TAG_CIP_TYPE_BOOL;
+        *out_size = 1;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+
+/* Calculate CRC16-CCITT for data
+ * Uses same algorithm as aphyt: poly=0xa001, initial=0x0000
+ */
+static uint16_t calculate_crc16(const uint8_t *data, size_t len) {
+    uint16_t crc = 0x0000;
+    const uint16_t poly = 0xa001;
+
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            uint16_t carry = crc & 1;
+            crc >>= 1;
+            if (carry) {
+                crc ^= poly;
+            }
+        }
+    }
+
+    return crc;
+}
+
+
+/* Calculate CRC16 for structure type definition
+ * Hashes: type name + all member names and types (in order)
+ */
+static uint16_t calculate_structure_crc(type_def_s *type) {
+    /* Build hash data: type name + member info */
+    size_t hash_size = strlen(type->name);
+
+    /* Count total size needed */
+    member_def_s *member = type->members;
+    while (member) {
+        hash_size += strlen(member->name) + strlen(member->member_type_string);
+        member = member->next_member;
+    }
+
+    /* Build hash data */
+    uint8_t *hash_data = calloc(hash_size, 1);
+    if (!hash_data) {
+        log_error("Failed to allocate hash_data for CRC calculation");
+        return 0;
+    }
+
+    size_t offset = 0;
+
+    /* Add type name */
+    size_t name_len = strlen(type->name);
+    memcpy(hash_data + offset, type->name, name_len);
+    offset += name_len;
+
+    /* Add member info */
+    member = type->members;
+    while (member) {
+        /* Add member name */
+        name_len = strlen(member->name);
+        memcpy(hash_data + offset, member->name, name_len);
+        offset += name_len;
+
+        /* Add member type string */
+        size_t type_len = strlen(member->member_type_string);
+        memcpy(hash_data + offset, member->member_type_string, type_len);
+        offset += type_len;
+
+        member = member->next_member;
+    }
+
+    /* Calculate CRC */
+    uint16_t crc = calculate_crc16(hash_data, offset);
+
+    free(hash_data);
+    return crc;
+}
 
 void parse_pccc_tag(const char *tag_str, plc_s *plc) {
     tag_def_s *tag = calloc(1, sizeof(*tag));
@@ -667,35 +856,29 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
         usage();
     }
 
-    /* match the type. */
-    if(str_cmp_i(type_str, "SINT") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_SINT;
-        tag->elem_size = 1;
-    } else if(str_cmp_i(type_str, "INT") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_INT;
-        tag->elem_size = 2;
-    } else if(str_cmp_i(type_str, "DINT") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_DINT;
-        tag->elem_size = 4;
-    } else if(str_cmp_i(type_str, "LINT") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_LINT;
-        tag->elem_size = 8;
-    } else if(str_cmp_i(type_str, "REAL") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_REAL;
-        tag->elem_size = 4;
-    } else if(str_cmp_i(type_str, "LREAL") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_LREAL;
-        tag->elem_size = 8;
-    } else if(str_cmp_i(type_str, "STRING") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_STRING;
-        tag->elem_size = 88;
-    } else if(str_cmp_i(type_str, "BOOL") == 0) {
-        tag->tag_type = TAG_CIP_TYPE_BOOL;
-        tag->elem_size = 1;
+    /* match the type - try simple types first */
+    if (map_type_string_to_cip(type_str, &tag->tag_type, &tag->elem_size)) {
+        /* Successfully mapped to a simple type */
+        tag->type_def = NULL;
     } else {
-        // NOLINTNEXTLINE
-        fprintf(stderr, "Unsupported tag type \"%s\"!", type_str);
-        usage();
+        /* Try to find a user-defined structure type (Omron only) */
+        if (plc && plc->plc_type == PLC_OMRON) {
+            type_def_s *udt = find_type_by_name(plc, type_str);
+            if (udt) {
+                /* This is a structure type */
+                tag->tag_type = TAG_CIP_TYPE_STRUCT;  /* 0x00A0 */
+                tag->elem_size = udt->size;
+                tag->type_def = udt;
+            } else {
+                // NOLINTNEXTLINE
+                fprintf(stderr, "Unsupported tag type \"%s\" (not a known simple type or defined structure)!\n", type_str);
+                usage();
+            }
+        } else {
+            // NOLINTNEXTLINE
+            fprintf(stderr, "Unsupported tag type \"%s\" (structure types only supported for Omron PLC)!\n", type_str);
+            usage();
+        }
     }
 
     /* match the dimensions. */
@@ -756,9 +939,343 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
     log_info("Processed \"%s\" into tag %s of type %x with dimensions (%zu, %zu, %zu).", tag_str, tag->name, tag->tag_type,
          tag->dimensions[0], tag->dimensions[1], tag->dimensions[2]);
 
+    /* assign instance ID for Omron tag enumeration */
+    plc->next_instance_id++;
+    tag->instance_id = plc->next_instance_id;
+    log_info("Assigned instance ID %u to tag %s", tag->instance_id, tag->name);
+
     /* add the tag to the list. */
     tag->next_tag = plc->tags;
     plc->tags = tag;
+    plc->tag_count++;
+}
+
+
+/* Parse structure definition from command line (PASS 1)
+ * Format: TypeName:[field1:type1,field2:type2,...]
+ * Example: MyPoint:[x:INT,y:INT]
+ *
+ * Pass 1: Parse and store structure definition without resolving nested types
+ * Pass 2 (later): Resolve nested type references and calculate sizes
+ */
+void parse_struct_definition(const char *struct_str, plc_s *plc) {
+    char type_name[256];
+    char field_list[1024];
+    type_def_s *type = NULL;
+    member_def_s *last_member = NULL;
+    uint16_t member_count = 0;
+
+    /* Parse: TypeName:[...] */
+    if (sscanf(struct_str, "%255[^:]:[%1023[^]]]", type_name, field_list) != 2) {
+        log_error("Invalid struct format: %s", struct_str);
+        log_error("Expected: TypeName:[field1:type1,field2:type2,...]");
+        return;
+    }
+
+    /* Check for duplicate type name */
+    if (find_type_by_name(plc, type_name)) {
+        log_error("Structure type '%s' already defined", type_name);
+        return;
+    }
+
+    /* Allocate type definition */
+    type = calloc(1, sizeof(type_def_s));
+    if (!type) {
+        log_error("Failed to allocate type_def_s");
+        return;
+    }
+
+    type->name = strdup(type_name);
+    if (!type->name) {
+        log_error("Failed to allocate type name");
+        free(type);
+        return;
+    }
+
+    /* CRC will be calculated during finalization (Pass 2) */
+
+    /* Parse field list: field1:type1,field2:type2,... */
+    char *field_str_copy = strdup(field_list);
+    if (!field_str_copy) {
+        log_error("Failed to allocate field_str_copy");
+        free(type->name);
+        free(type);
+        return;
+    }
+
+    char *saveptr = NULL;
+    char *token = strtok_r(field_str_copy, ",", &saveptr);
+
+    while (token) {
+        char field_name[256];
+        char field_type_str[256];
+
+        if (sscanf(token, "%255[^:]:%255s", field_name, field_type_str) != 2) {
+            log_error("Invalid field format in '%s': %s", type_name, token);
+            goto cleanup;
+        }
+
+        /* Allocate member */
+        member_def_s *member = calloc(1, sizeof(member_def_s));
+        if (!member) {
+            log_error("Failed to allocate member_def_s");
+            goto cleanup;
+        }
+
+        member->name = strdup(field_name);
+        if (!member->name) {
+            log_error("Failed to allocate member name");
+            free(member);
+            goto cleanup;
+        }
+
+        /* Store type string for later resolution (Pass 2) */
+        member->member_type_string = strdup(field_type_str);
+        if (!member->member_type_string) {
+            log_error("Failed to allocate member_type_string");
+            free(member->name);
+            free(member);
+            goto cleanup;
+        }
+
+        /* Add to linked list */
+        if (last_member) {
+            last_member->next_member = member;
+        } else {
+            type->members = member;
+        }
+        last_member = member;
+        member_count++;
+
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+
+    type->member_count = member_count;
+
+    /* Add type to registry (size and offsets will be calculated in Pass 2) */
+    type->next_type = plc->types;
+    plc->types = type;
+    plc->type_count++;
+
+    log_info("Parsed structure '%s' with %u members (Pass 1 - type resolution deferred)",
+             type_name, member_count);
+
+    free(field_str_copy);
+    return;
+
+cleanup:
+    /* Free partial structure on error */
+    if (type) {
+        member_def_s *m = type->members;
+        while (m) {
+            member_def_s *next = m->next_member;
+            free(m->name);
+            free(m->member_type_string);
+            free(m);
+            m = next;
+        }
+        free(type->name);
+        free(type);
+    }
+    free(field_str_copy);
+}
+
+
+/* Calculate structure size recursively with circular reference detection (PASS 2)
+ * visited_chain: array of type pointers to detect cycles
+ * chain_depth: current depth in the type hierarchy
+ */
+static size_t calculate_structure_size(type_def_s *type, type_def_s **visited_chain, int chain_depth) {
+    const int MAX_DEPTH = 100;
+
+    /* Check for circular reference */
+    for (int i = 0; i < chain_depth; i++) {
+        if (visited_chain[i] == type) {
+            log_error("Circular reference detected: type '%s' contains itself (directly or indirectly)", type->name);
+            return 0;  /* Error indicator */
+        }
+    }
+
+    /* Prevent stack overflow */
+    if (chain_depth >= MAX_DEPTH) {
+        log_error("Type nesting too deep (max %d levels)", MAX_DEPTH);
+        return 0;
+    }
+
+    /* Add to visited chain */
+    visited_chain[chain_depth] = type;
+
+    /* Calculate member offsets and structure size */
+    size_t current_offset = 0;
+    size_t max_alignment = 1;
+    member_def_s *member = type->members;
+
+    while (member) {
+        /* Calculate member size and alignment */
+        if (member->nested_type) {
+            /* Nested structure - recursively calculate its size */
+            size_t nested_size = calculate_structure_size(member->nested_type, visited_chain, chain_depth + 1);
+            if (nested_size == 0) {
+                return 0;  /* Error in nested type */
+            }
+            member->member_size = nested_size;
+            member->alignment = get_type_alignment(TAG_CIP_TYPE_STRUCT);  /* Structures align based on largest member */
+
+            /* Recalculate alignment for nested structure */
+            member_def_s *nested_member = member->nested_type->members;
+            size_t nested_max_align = 1;
+            while (nested_member) {
+                if (nested_member->alignment > nested_max_align) {
+                    nested_max_align = nested_member->alignment;
+                }
+                nested_member = nested_member->next_member;
+            }
+            member->alignment = nested_max_align;
+        }
+        /* else: already set by resolve_member_types() */
+
+        /* Align current offset to member alignment */
+        current_offset = align_offset(current_offset, member->alignment);
+        member->offset_in_struct = current_offset;
+        current_offset += member->member_size;
+
+        /* Track maximum alignment */
+        if (member->alignment > max_alignment) {
+            max_alignment = member->alignment;
+        }
+
+        member = member->next_member;
+    }
+
+    /* Calculate total structure size (aligned to max member alignment) */
+    type->size = align_offset(current_offset, max_alignment);
+
+    log_info("Calculated size of type '%s': %zu bytes, max alignment: %zu", type->name, type->size, max_alignment);
+
+    return type->size;
+}
+
+
+/* Resolve member type references (PASS 2)
+ * After all structures are parsed, resolve type strings to actual type pointers
+ * Returns false if any type reference cannot be resolved
+ */
+static bool resolve_member_types(plc_s *plc) {
+    type_def_s *type = plc->types;
+    bool errors = false;
+
+    while (type) {
+        member_def_s *member = type->members;
+        while (member) {
+            /* Try to map to simple type first */
+            if (map_type_string_to_cip(member->member_type_string, &member->member_type, &member->member_size)) {
+                /* Simple type - no nested structure */
+                member->nested_type = NULL;
+                member->alignment = get_type_alignment(member->member_type);
+            } else {
+                /* Try to find user-defined structure type */
+                type_def_s *nested = find_type_by_name(plc, member->member_type_string);
+                if (nested) {
+                    /* Nested structure */
+                    member->member_type = TAG_CIP_TYPE_STRUCT;  /* 0x00A0 */
+                    member->nested_type = nested;
+                    /* Size will be calculated in calculate_structure_size() */
+                    /* Alignment will be set based on largest member */
+                } else {
+                    /* Unknown type */
+                    log_error("Type '%s' used in member '%s' of struct '%s' is not defined",
+                             member->member_type_string, member->name, type->name);
+                    errors = true;
+                }
+            }
+
+            member = member->next_member;
+        }
+
+        type = type->next_type;
+    }
+
+    return !errors;
+}
+
+
+/* Finalize structure definitions (PASS 2)
+ * Resolve nested type references and calculate structure sizes
+ * Must be called after all structure definitions are parsed
+ */
+static void finalize_structure_definitions(plc_s *plc) {
+    log_info("Finalizing structure definitions (Pass 2)...");
+
+    /* Step 1: Resolve all member type references */
+    if (!resolve_member_types(plc)) {
+        log_error("Failed to resolve all member type references");
+        return;
+    }
+
+    /* Step 2: Calculate sizes with circular reference detection */
+    type_def_s *type = plc->types;
+    type_def_s **visited_chain = calloc(100, sizeof(type_def_s *));
+    if (!visited_chain) {
+        log_error("Failed to allocate visited_chain for circular reference detection");
+        return;
+    }
+
+    while (type) {
+        memset(visited_chain, 0, 100 * sizeof(type_def_s *));
+        size_t size = calculate_structure_size(type, visited_chain, 0);
+        if (size == 0) {
+            log_error("Failed to calculate size for type '%s'", type->name);
+        }
+        type = type->next_type;
+    }
+
+    free(visited_chain);
+
+    /* Step 3: Calculate CRC16 for each type */
+    type = plc->types;
+    while (type) {
+        uint16_t crc = calculate_structure_crc(type);
+        type->crc_code = crc;
+        log_info("Calculated CRC16 for type '%s': 0x%04x", type->name, crc);
+        type = type->next_type;
+    }
+
+    log_info("Structure definitions finalized successfully");
+}
+
+
+/* Assign instance IDs to structure types and their members
+ * Called after all tags and types are parsed
+ */
+void assign_type_instance_ids(plc_s *plc) {
+    /* First, finalize all structure definitions (Pass 2) - Omron only */
+    if (plc->types && plc->plc_type == PLC_OMRON) {
+        finalize_structure_definitions(plc);
+    }
+
+    type_def_s *type = plc->types;
+
+    while (type) {
+        /* Assign instance ID to type */
+        plc->next_instance_id++;
+        type->instance_id = plc->next_instance_id;
+
+        log_info("Assigned instance ID %u to type '%s'", type->instance_id, type->name);
+
+        /* Assign instance IDs to members */
+        member_def_s *member = type->members;
+        while (member) {
+            plc->next_instance_id++;
+            member->instance_id = plc->next_instance_id;
+
+            log_info("  Assigned instance ID %u to member '%s.%s'",
+                     member->instance_id, type->name, member->name);
+
+            member = member->next_member;
+        }
+
+        type = type->next_type;
+    }
 }
 
 

@@ -45,6 +45,7 @@
 
 
 /* tag commands */
+#define CIP_SRV_GET_ATTR_ALL ((uint8_t)0x01)
 #define CIP_SRV_MULTI ((uint8_t)0x0a)
 #define CIP_SRV_PCCC_EXECUTE ((uint8_t)0x4b)
 #define CIP_SRV_READ_NAMED_TAG ((uint8_t)0x4c)
@@ -54,6 +55,7 @@
 #define CIP_SRV_WRITE_NAMED_TAG_FRAG ((uint8_t)0x53)
 #define CIP_SRV_FORWARD_OPEN ((uint8_t)0x54)
 #define CIP_SRV_INSTANCES_ATTRIBS ((uint8_t)0x55)
+#define CIP_SRV_GET_INSTANCE_LIST ((uint8_t)0x5f)
 #define CIP_SRV_FORWARD_OPEN_EX ((uint8_t)0x5b)
 
 
@@ -129,6 +131,10 @@ static slice_s handle_write_request(uint8_t cip_service, slice_s cip_service_pat
                                     plc_s *plc);
 static slice_s handle_multi_request(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
                                     plc_s *plc);
+static slice_s handle_get_attribute_all(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                        plc_s *plc);
+static slice_s handle_get_instance_list(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                        plc_s *plc);
 
 static bool parse_cip_request(slice_s input, uint8_t *cip_service, slice_s *cip_service_path, slice_s *cip_service_payload);
 static bool extract_cip_path(slice_s input, size_t *offset, bool padded, slice_s *output);
@@ -136,6 +142,105 @@ static bool parse_tag_path(slice_s tag_path, plc_s *plc, tag_def_s **tag, uint32
 static bool calculate_request_start_and_end_offsets(tag_def_s *tag, uint32_t num_indexes, uint32_t *indexes,
                                                     uint16_t request_element_count, size_t *request_start_byte_offset,
                                                     size_t *request_end_byte_offset);
+
+
+/*
+ * Parse logical segment path: 0x20 <class> 0x24 <instance>
+ * Returns true if successfully parsed, false otherwise.
+ */
+static bool parse_logical_path(slice_s path, uint16_t *class_id, uint32_t *instance_id) {
+    size_t offset = 0;
+    size_t path_len = slice_len(path);
+
+    if (path_len < 4) {
+        log_info("Logical path too short: %zu bytes", path_len);
+        return false;
+    }
+
+    /* Parse class segment (0x20 = 8-bit class, 0x21 = 16-bit class) */
+    uint8_t segment_type = slice_get_uint8(path, offset++);
+    if (segment_type == 0x20) {
+        if (offset + 1 > path_len) return false;
+        *class_id = slice_get_uint8(path, offset++);
+    } else if (segment_type == 0x21) {
+        if (offset + 3 > path_len) return false;
+        *class_id = slice_get_uint16_le(path, offset);
+        offset += 3;  /* 2 bytes value + 1 padding */
+    } else {
+        log_info("Invalid class segment type: 0x%02x", segment_type);
+        return false;
+    }
+
+    /* Parse instance segment (0x24 = 8-bit, 0x25 = 16-bit, 0x26 = 32-bit) */
+    if (offset >= path_len) return false;
+    segment_type = slice_get_uint8(path, offset++);
+    if (segment_type == 0x24) {
+        if (offset + 1 > path_len) return false;
+        *instance_id = slice_get_uint8(path, offset++);
+    } else if (segment_type == 0x25) {
+        if (offset + 3 > path_len) return false;
+        *instance_id = slice_get_uint16_le(path, offset);
+        offset += 3;
+    } else if (segment_type == 0x26) {
+        if (offset + 5 > path_len) return false;
+        *instance_id = slice_get_uint32_le(path, offset);
+        offset += 5;
+    } else {
+        log_info("Invalid instance segment type: 0x%02x", segment_type);
+        return false;
+    }
+
+    log_info("Parsed logical path: class=0x%04x, instance=0x%08x", *class_id, *instance_id);
+    return true;
+}
+
+
+/*
+ * Find tag by instance ID.
+ * Returns pointer to tag_def_s if found, NULL otherwise.
+ * 
+ * This does not use a mutex, but the tag list is static during CIP processing.
+ */
+static tag_def_s* find_tag_by_instance_id(plc_s *plc, uint32_t instance_id) {
+    tag_def_s *tag = plc->tags;
+    while (tag) {
+        if (tag->instance_id == instance_id) {
+            return tag;
+        }
+        tag = tag->next_tag;
+    }
+    return NULL;
+}
+
+
+/* Find structure type by instance ID */
+static type_def_s* find_type_by_instance_id(plc_s *plc, uint32_t instance_id) {
+    type_def_s *type = plc->types;
+    while (type) {
+        if (type->instance_id == instance_id) {
+            return type;
+        }
+        type = type->next_type;
+    }
+    return NULL;
+}
+
+
+/* Find structure member by instance ID */
+static member_def_s* find_member_by_instance_id(plc_s *plc, uint32_t instance_id) {
+    type_def_s *type = plc->types;
+    while (type) {
+        member_def_s *member = type->members;
+        while (member) {
+            if (member->instance_id == instance_id) {
+                return member;
+            }
+            member = member->next_member;
+        }
+        type = type->next_type;
+    }
+    return NULL;
+}
 
 
 slice_s cip_dispatch_request(slice_s input, slice_s output, plc_s *plc) {
@@ -179,6 +284,14 @@ slice_s cip_dispatch_request(slice_s input, slice_s output, plc_s *plc) {
         case CIP_SRV_WRITE_NAMED_TAG:
         case CIP_SRV_WRITE_NAMED_TAG_FRAG:
             return handle_write_request(cip_service, cip_service_path, cip_service_payload, output, plc);
+            break;
+
+        case CIP_SRV_GET_ATTR_ALL:
+            return handle_get_attribute_all(cip_service, cip_service_path, cip_service_payload, output, plc);
+            break;
+
+        case CIP_SRV_GET_INSTANCE_LIST:
+            return handle_get_instance_list(cip_service, cip_service_path, cip_service_payload, output, plc);
             break;
 
         case CIP_SRV_PCCC_EXECUTE: return dispatch_pccc_request(input, output, plc); break;
@@ -1234,6 +1347,468 @@ bool calculate_request_start_and_end_offsets(tag_def_s *tag, uint32_t num_indexe
 
     return true;
 }
+
+/*
+ * Handle Get Attribute All (Service 0x01)
+ * Used by both Class 0x6A (Tag Name Server) and Class 0x6B (Variable Object)
+ */
+slice_s handle_get_attribute_all(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                 plc_s *plc) {
+    (void)cip_service_payload;  /* Not used in Phase 1 */
+    uint16_t class_id = 0;
+    uint32_t instance_id = 0;
+    size_t offset = 0;
+    size_t path_offset = 0;
+    tag_def_s *tag = NULL;
+
+    log_info("Processing Get Attribute All (Service 0x01)");
+
+    /* Check if path starts with symbolic segment (0x91) or logical segment (0x20/0x21) */
+    if (slice_len(cip_service_path) > 0) {
+        uint8_t first_byte = slice_get_uint8(cip_service_path, 0);
+
+        /* Handle symbolic path: 0x91 <name_len> <name> */
+        if (first_byte == 0x91) {
+            log_info("Parsing symbolic path for tag lookup");
+
+            if (slice_len(cip_service_path) < 2) {
+                log_info("Symbolic path too short");
+                return make_cip_log_error(output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+            }
+
+            path_offset = 1;
+            uint8_t name_len = slice_get_uint8(cip_service_path, path_offset);
+            path_offset++;
+
+            if (path_offset + name_len > slice_len(cip_service_path)) {
+                log_info("Tag name extends beyond path length");
+                return make_cip_log_error(output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+            }
+
+            /* Extract tag name and find tag */
+            slice_s tag_name_slice = slice_from_slice(cip_service_path, path_offset, name_len);
+            tag = plc->tags;
+            while (tag) {
+                if (slice_match_string_exact(tag_name_slice, tag->name)) {
+                    log_info("Found tag by name: %s, instance ID: %u", tag->name, tag->instance_id);
+                    break;
+                }
+                tag = tag->next_tag;
+            }
+
+            if (!tag) {
+                log_info("Tag not found");
+                return make_cip_log_error(output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+            }
+
+            /* For symbolic paths, we return the variable object metadata */
+            class_id = 0x6B;  /* Variable Object */
+            instance_id = tag->instance_id;
+        } else {
+            /* Parse logical path for Class/Instance addressing */
+            if (!parse_logical_path(cip_service_path, &class_id, &instance_id)) {
+                log_info("Unable to parse logical path");
+                return make_cip_log_error(output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+            }
+        }
+    } else {
+        log_info("Empty path");
+        return make_cip_log_error(output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+    }
+
+    /* Build response header */
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);  /* Reply service */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Reserved */
+    offset++;
+    slice_set_uint8(output, offset, CIP_OK);  /* Status */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Extended status size */
+    offset++;
+
+    /* Handle Class 0x6A (Tag Name Server), Instance 0 */
+    if (class_id == 0x6A && instance_id == 0) {
+        log_info("Get Attribute All for Tag Name Server (Class 0x6A, Instance 0)");
+
+        /* Check output buffer space (4 bytes header + 4 bytes data) */
+        if (offset + 4 > slice_len(output)) {
+            return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+
+        /* Response data: reserved (2 bytes) + tag count (2 bytes) */
+        slice_set_uint16_le(output, offset, 0);  /* Reserved */
+        offset += 2;
+        slice_set_uint16_le(output, offset, (uint16_t)plc->tag_count);  /* Total tag count */
+        offset += 2;
+
+        log_info("Tag Name Server - Total tags: %u", plc->tag_count);
+        return slice_from_slice(output, 0, offset);
+    }
+
+    /* Handle Class 0x6B (Variable Object), Instance N */
+    if (class_id == 0x6B) {
+        log_info("Get Attribute All for Variable Object (Class 0x6B, Instance %u)", instance_id);
+
+        /* Find tag by instance ID */
+        tag = find_tag_by_instance_id(plc, instance_id);
+        if (!tag) {
+            log_info("Tag with instance ID %u not found", instance_id);
+            return make_cip_log_error(output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+        }
+
+        /* Check output buffer space for basic metadata */
+        /* Minimum: 4 (header) + 4 (size) + 1 (type) + 1 (array type) + 1 (dim count) + 1 (padding) + 3 (bit/padding) + 4 (type instance) = 19 bytes */
+        if (offset + 19 > slice_len(output)) {
+            return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+
+        /* Response data for Variable Object */
+        /* Note: Size must be 4 bytes to match aphyt's expected format (reply_data[0:4]) */
+        slice_set_uint32_le(output, offset, (uint32_t)(tag->elem_count * tag->elem_size));  /* Size in bytes */
+        offset += 4;
+
+        slice_set_uint8(output, offset, (uint8_t)tag->tag_type);  /* CIP data type */
+        offset++;
+
+        slice_set_uint8(output, offset, 0);  /* CIP data type of array (0x00 if scalar) */
+        offset++;
+
+        slice_set_uint8(output, offset, (uint8_t)tag->num_dimensions);  /* Array dimension count */
+        offset++;
+
+        slice_set_uint8(output, offset, 0);  /* Padding */
+        offset++;
+
+        /* Add dimension sizes if array */
+        if (tag->num_dimensions > 0) {
+            if (offset + (tag->num_dimensions * 4) > slice_len(output)) {
+                return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+            }
+            for (size_t i = 0; i < tag->num_dimensions; i++) {
+                slice_set_uint32_le(output, offset, (uint32_t)tag->dimensions[i]);
+                offset += 4;
+            }
+        }
+
+        /* Add bit number and padding (16+(dim*4) and 17+(dim*4) in spec) */
+        if (offset + 3 > slice_len(output)) {
+            return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+        slice_set_uint8(output, offset, 0);  /* Bit number (0 for non-BOOL types) */
+        offset++;
+        slice_set_uint16_le(output, offset, 0);  /* Padding/Reserved */
+        offset += 2;
+
+        /* Variable Type Instance ID: set to type instance ID if structure, 0 for simple types */
+        if (offset + 4 > slice_len(output)) {
+            return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+        if (tag->type_def) {
+            /* This tag uses a structure type */
+            slice_set_uint32_le(output, offset, tag->type_def->instance_id);
+            log_info("Variable Object - Tag: %s, Size: %zu bytes, Type: 0x%04x (structure), Type ID: %u, Dims: %zu",
+                     tag->name, tag->elem_count * tag->elem_size, tag->tag_type, tag->type_def->instance_id, tag->num_dimensions);
+        } else {
+            /* Simple type */
+            slice_set_uint32_le(output, offset, 0);  /* Variable Type Instance ID (0 for simple types) */
+            log_info("Variable Object - Tag: %s, Size: %zu bytes, Type: 0x%04x, Dims: %zu",
+                     tag->name, tag->elem_count * tag->elem_size, tag->tag_type, tag->num_dimensions);
+        }
+        offset += 4;
+        return slice_from_slice(output, 0, offset);
+    }
+
+    /* Handle Class 0x6C (Variable Type Objects/Structures) - Omron only */
+    if (class_id == 0x6C) {
+        /* Class 0x6C is only supported for Omron PLCs */
+        if (plc->plc_type != PLC_OMRON) {
+            log_info("Class 0x6C (Variable Type Objects) is only supported for Omron PLC type");
+            return make_cip_log_error(output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+        }
+
+        log_info("Get Attribute All for Variable Type (Class 0x6C, Instance %u)", instance_id);
+
+        /* Try to find structure type */
+        type_def_s *type = find_type_by_instance_id(plc, instance_id);
+        if (type) {
+            /* Response for structure type definition */
+            size_t name_len = strlen(type->name);
+            size_t name_padding = (name_len % 2 == 1) ? 1 : 0;  /* Word alignment */
+
+            /* Calculate response size */
+            size_t response_size = 4 + 4 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 1 + name_len + name_padding + 4 + 4;
+
+            if (offset + response_size > slice_len(output)) {
+                return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+            }
+
+            /* Build response */
+            slice_set_uint32_le(output, offset, (uint32_t)type->size);  /* Size in memory */
+            offset += 4;
+
+            slice_set_uint8(output, offset, 0xA0);  /* CIP data type: Structure */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Array type: not array */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Dimension count: 0 */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Padding */
+            offset++;
+
+            slice_set_uint16_le(output, offset, type->member_count);  /* Number of members */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, 0);  /* Reserved */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, type->crc_code);  /* CRC code */
+            offset += 2;
+
+            slice_set_uint8(output, offset, (uint8_t)name_len);  /* Type name length */
+            offset++;
+
+            /* Type name */
+            uint8_t *name_ptr = slice_get_bytes(output, offset);
+            if (name_ptr) {
+                memcpy(name_ptr, type->name, name_len);
+            }
+            offset += name_len;
+
+            /* Padding if needed */
+            if (name_padding) {
+                slice_set_uint8(output, offset, 0);
+                offset++;
+            }
+
+            /* Next Instance ID (first member, or 0 if no members) */
+            uint32_t first_member_id = type->members ? type->members->instance_id : 0;
+            slice_set_uint32_le(output, offset, first_member_id);
+            offset += 4;
+
+            /* Nesting Variable Type Instance ID (0 for top-level types) */
+            slice_set_uint32_le(output, offset, 0);
+            offset += 4;
+
+            log_info("Type Definition - Name: %s, Size: %zu, Members: %u, CRC: 0x%04x",
+                     type->name, type->size, type->member_count, type->crc_code);
+
+            return slice_from_slice(output, 0, offset);
+        }
+
+        /* Try to find structure member */
+        member_def_s *member = find_member_by_instance_id(plc, instance_id);
+        if (member) {
+            /* Response for structure member */
+            size_t name_len = strlen(member->name);
+            size_t name_padding = (name_len % 2 == 1) ? 1 : 0;
+
+            size_t response_size = 4 + 4 + 1 + 1 + 1 + 1 + 2 + 2 + 2 + 1 + name_len + name_padding + 4 + 4;
+
+            if (offset + response_size > slice_len(output)) {
+                return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+            }
+
+            /* Build response */
+            slice_set_uint32_le(output, offset, (uint32_t)member->member_size);
+            offset += 4;
+
+            slice_set_uint8(output, offset, (uint8_t)member->member_type);
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Array type */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Dimension count */
+            offset++;
+
+            slice_set_uint8(output, offset, 0);  /* Padding */
+            offset++;
+
+            slice_set_uint16_le(output, offset, 0);  /* Member count: 0 for leaf */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, 0);  /* Reserved */
+            offset += 2;
+
+            slice_set_uint16_le(output, offset, 0);  /* CRC: 0 for members */
+            offset += 2;
+
+            slice_set_uint8(output, offset, (uint8_t)name_len);
+            offset++;
+
+            uint8_t *member_name_ptr = slice_get_bytes(output, offset);
+            if (member_name_ptr) {
+                memcpy(member_name_ptr, member->name, name_len);
+            }
+            offset += name_len;
+
+            if (name_padding) {
+                slice_set_uint8(output, offset, 0);
+                offset++;
+            }
+
+            /* Next Instance ID (next member in chain, or 0 if last) */
+            uint32_t next_member_id = member->next_member ? member->next_member->instance_id : 0;
+            slice_set_uint32_le(output, offset, next_member_id);
+            offset += 4;
+
+            /* Nesting Type Instance ID (0 for primitive members) */
+            slice_set_uint32_le(output, offset, 0);
+            offset += 4;
+
+            log_info("Member Definition - Name: %s, Type: 0x%04x, Size: %zu, Next: %u",
+                     member->name, member->member_type, member->member_size, next_member_id);
+
+            return slice_from_slice(output, 0, offset);
+        }
+
+        /* Instance ID not found */
+        log_info("Variable Type instance %u not found", instance_id);
+        return make_cip_log_error(output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+    }
+
+    /* Unsupported class */
+    log_info("Unsupported class 0x%02x for Get Attribute All", class_id);
+    return make_cip_log_error(output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+}
+
+
+/*
+ * Handle Get Instance List (Service 0x5F) - Omron-specific
+ * Request path: Class 0x6A, Instance 0
+ * Request payload: Start Instance ID (4 bytes) + Count (4 bytes) + Kind (2 bytes)
+ */
+slice_s handle_get_instance_list(uint8_t cip_service, slice_s cip_service_path, slice_s cip_service_payload, slice_s output,
+                                 plc_s *plc) {
+    uint16_t class_id = 0;
+    uint32_t instance_id = 0;
+    uint32_t start_instance = 0;
+    uint32_t count_requested = 0;
+    uint16_t kind = 0;
+    size_t offset = 0;
+    tag_def_s *tag = NULL;
+    uint16_t count_returned = 0;
+
+    log_info("Processing Get Instance List (Service 0x5F)");
+
+    /* Parse the logical path to verify it's Class 0x6A, Instance 0 */
+    if (!parse_logical_path(cip_service_path, &class_id, &instance_id)) {
+        log_info("Unable to parse logical path");
+        return make_cip_log_error(output, cip_service, CIP_ERR_PATH_SEGMENT, false, 0);
+    }
+
+    if (class_id != 0x6A || instance_id != 0) {
+        log_info("Get Instance List must be directed to Class 0x6A, Instance 0");
+        return make_cip_log_error(output, cip_service, CIP_ERR_PATH_DEST_UNKNOWN, false, 0);
+    }
+
+    /* Parse request payload */
+    if (slice_len(cip_service_payload) < 10) {
+        log_info("Get Instance List payload too short");
+        return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+    }
+
+    start_instance = slice_get_uint32_le(cip_service_payload, 0);
+    count_requested = slice_get_uint32_le(cip_service_payload, 4);
+    kind = slice_get_uint16_le(cip_service_payload, 8);
+
+    log_info("Get Instance List: start=%u, count=%u, kind=%u", start_instance, count_requested, kind);
+
+    /* Build response header */
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);  /* Reply service */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Reserved */
+    offset++;
+    slice_set_uint8(output, offset, CIP_OK);  /* Status */
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Extended status size */
+    offset++;
+
+    /* Response payload: count (2 bytes) + more flag (1 byte) + reserved (1 byte) + records */
+    size_t count_offset = offset;
+    offset += 2;  /* Will update count later */
+
+    uint8_t more_available = 0;
+    size_t record_offset = offset + 2;  /* Leave space for more flag + reserved */
+
+    /* Iterate through tags to collect matching instances */
+    tag = plc->tags;
+    while (tag && count_returned < count_requested) {
+        /* Filter based on kind: 2 = user variables (not starting with '_') */
+        if (kind == 2 && (tag->name[0] == '_')) {
+            tag = tag->next_tag;
+            continue;
+        }
+
+        /* Skip tags until we reach start_instance */
+        if (tag->instance_id < start_instance) {
+            tag = tag->next_tag;
+            continue;
+        }
+
+        /* Build instance record */
+        size_t name_len = strlen(tag->name);
+        size_t record_size = 2 + 2 + 4 + 1 + name_len;  /* data length + class + instance + name length + name */
+        if (name_len % 2) {
+            record_size++;  /* padding for word alignment */
+        }
+
+        /* Check if record fits */
+        if (record_offset + record_size > slice_len(output)) {
+            more_available = 1;
+            break;
+        }
+
+        /* Write instance record */
+        size_t record_start = record_offset;  /* Tracks start of each named tag record instance */
+        (void)record_start;  /* May be used for future enhanced error handling */
+        slice_set_uint16_le(output, record_offset, (uint16_t)(2 + 2 + 4 + 1 + name_len + (name_len % 2 ? 1 : 0)));  /* Data length */
+        record_offset += 2;
+
+        slice_set_uint16_le(output, record_offset, 0x6B);  /* Class ID (Variable Object) */
+        record_offset += 2;
+
+        slice_set_uint32_le(output, record_offset, tag->instance_id);  /* Instance ID */
+        record_offset += 4;
+
+        slice_set_uint8(output, record_offset, (uint8_t)name_len);  /* Name length */
+        record_offset++;
+
+        /* Copy name */
+        if (!slice_copy_data_in(slice_from_slice(output, record_offset, name_len),
+                                (uint8_t*)tag->name, name_len)) {
+            return make_cip_log_error(output, cip_service, CIP_ERR_INSUFFICIENT_DATA, false, 0);
+        }
+        record_offset += name_len;
+
+        /* Add padding if name length is odd */
+        if (name_len % 2) {
+            slice_set_uint8(output, record_offset, 0);
+            record_offset++;
+        }
+
+        count_returned++;
+        log_info("Added instance record: ID=%u, Name=%s", tag->instance_id, tag->name);
+
+        tag = tag->next_tag;
+    }
+
+    /* Write count and more flag */
+    offset = count_offset;
+    slice_set_uint16_le(output, offset, count_returned);
+    offset += 2;
+    slice_set_uint8(output, offset, more_available);
+    offset++;
+    slice_set_uint8(output, offset, 0);  /* Reserved */
+    offset++;
+
+    log_info("Get Instance List response: returned=%u, more=%u", count_returned, more_available);
+    return slice_from_slice(output, 0, record_offset);
+}
+
 
 #define CIP_MIN_REQUEST_SIZE \
     4 /*  1 byte for service, 1 byte for service path length in word, 2 bytes for minimal service path. */
