@@ -39,25 +39,21 @@
  * CIP Path Parsing
  * ============================================================================ */
 
-util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words,
-                         cip_path_t *path) {
+util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words, cip_path_t *path) {
     memset(path, 0, sizeof(*path));
 
-    size_t path_bytes = path_size_words * 2;  /* Convert words to bytes */
+    size_t path_bytes = path_size_words * 2; /* Convert words to bytes */
     size_t start_pos = buf_read_pos(input);
     size_t end_pos = start_pos + path_bytes;
 
-    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-          "CIP path: parsing %u words (%zu bytes)",
-          path_size_words, path_bytes);
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP path: parsing %u words (%zu bytes)", path_size_words, path_bytes);
 
     /* Parse segments until we reach end */
-    while (buf_read_pos(input) < end_pos && path->segment_count < 16) {
+    while(buf_read_pos(input) < end_pos && path->segment_count < 16) {
         uint8_t segment_format;
 
-        if (!buf_read_u8(input, "segment_format", &segment_format)) {
-            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-                  "CIP path: failed to read segment format");
+        if(!buf_read_u8(input, "segment_format", &segment_format)) {
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP path: failed to read segment format");
             return buf_get_error(input);
         }
 
@@ -65,83 +61,64 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words,
         seg->type = segment_format;
 
         /* Dispatch by segment type */
-        switch (segment_format) {
+        switch(segment_format) {
             /* Logical: Class 8-bit */
             case CIP_SEGMENT_LOGICAL_CLASS_8BIT: {
                 uint8_t class_id;
-                if (!buf_read_u8(input, "class_id", &class_id)) {
-                    return buf_get_error(input);
-                }
+                if(!buf_read_u8(input, "class_id", &class_id)) { return buf_get_error(input); }
                 seg->logical.id = class_id;
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-                      "  segment %zu: class 0x%02X", path->segment_count, class_id);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: class 0x%02X", path->segment_count, class_id);
                 break;
             }
 
             /* Logical: Class 16-bit */
             case CIP_SEGMENT_LOGICAL_CLASS_16BIT: {
-                buf_read_u8(input, "padding", NULL);  /* Skip padding */
+                buf_read_u8(input, "padding", NULL); /* Skip padding */
                 uint16_t class_id;
-                if (!buf_read_u16_le(input, "class_id", &class_id)) {
-                    return buf_get_error(input);
-                }
+                if(!buf_read_u16_le(input, "class_id", &class_id)) { return buf_get_error(input); }
                 seg->logical.id = class_id;
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-                      "  segment %zu: class 0x%04X", path->segment_count, class_id);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: class 0x%04X", path->segment_count, class_id);
                 break;
             }
 
             /* Logical: Instance 8-bit */
             case CIP_SEGMENT_LOGICAL_INSTANCE_8BIT: {
                 uint8_t instance_id;
-                if (!buf_read_u8(input, "instance_id", &instance_id)) {
-                    return buf_get_error(input);
-                }
+                if(!buf_read_u8(input, "instance_id", &instance_id)) { return buf_get_error(input); }
                 seg->logical.id = instance_id;
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-                      "  segment %zu: instance 0x%02X", path->segment_count, instance_id);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: instance 0x%02X", path->segment_count,
+                      instance_id);
                 break;
             }
 
             /* Logical: Instance 16-bit */
             case CIP_SEGMENT_LOGICAL_INSTANCE_16BIT: {
-                buf_read_u8(input, "padding", NULL);  /* Skip padding */
+                buf_read_u8(input, "padding", NULL); /* Skip padding */
                 uint16_t instance_id;
-                if (!buf_read_u16_le(input, "instance_id", &instance_id)) {
-                    return buf_get_error(input);
-                }
+                if(!buf_read_u16_le(input, "instance_id", &instance_id)) { return buf_get_error(input); }
                 seg->logical.id = instance_id;
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-                      "  segment %zu: instance 0x%04X", path->segment_count, instance_id);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: instance 0x%04X", path->segment_count,
+                      instance_id);
                 break;
             }
 
             /* Symbolic: Tag name */
             case CIP_SEGMENT_SYMBOLIC: {
                 uint8_t name_length;
-                if (!buf_read_u8(input, "name_length", &name_length)) {
-                    return buf_get_error(input);
-                }
+                if(!buf_read_u8(input, "name_length", &name_length)) { return buf_get_error(input); }
 
                 /* Get pointer to name data in buffer */
                 seg->symbolic.name = (const char *)buf_read_ptr(input);
                 seg->symbolic.length = name_length;
 
-                /* Cache for quick access */
-                path->symbol_name = seg->symbolic.name;
-                path->symbol_length = name_length;
-
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-                      "  segment %zu: symbolic tag '%.*s'",
-                      path->segment_count, (int)name_length, seg->symbolic.name);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: symbolic tag '%.*s'", path->segment_count,
+                      (int)name_length, seg->symbolic.name);
 
                 /* Advance past name */
                 buf_read_advance(input, name_length);
 
                 /* Pad to even boundary */
-                if (name_length & 1) {
-                    buf_read_advance(input, 1);
-                }
+                if(name_length & 1) { buf_read_advance(input, 1); }
                 break;
             }
 
@@ -149,24 +126,17 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words,
             case CIP_SEGMENT_DATA: {
                 uint32_t offset;
                 uint16_t count;
-                if (!buf_read_u32_le(input, "offset", &offset)) {
-                    return buf_get_error(input);
-                }
-                if (!buf_read_u16_le(input, "count", &count)) {
-                    return buf_get_error(input);
-                }
+                if(!buf_read_u32_le(input, "offset", &offset)) { return buf_get_error(input); }
+                if(!buf_read_u16_le(input, "count", &count)) { return buf_get_error(input); }
                 seg->data.offset_bytes = offset;
                 seg->data.element_count = count;
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-                      "  segment %zu: data offset=%u count=%u",
-                      path->segment_count, offset, count);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: data offset=%u count=%u", path->segment_count,
+                      offset, count);
                 break;
             }
 
             default:
-                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-                      "CIP path: unknown segment type 0x%02X",
-                      segment_format);
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP path: unknown segment type 0x%02X", segment_format);
                 return UTIL_ENOTSUPPORTED;
         }
 
@@ -174,9 +144,8 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words,
     }
 
     /* Verify we consumed exactly the right number of bytes */
-    if (buf_read_pos(input) != end_pos) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-              "CIP path: size mismatch (consumed %zu, expected %zu)",
+    if(buf_read_pos(input) != end_pos) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP path: size mismatch (consumed %zu, expected %zu)",
               buf_read_pos(input) - start_pos, path_bytes);
         return UTIL_EBOUNDS;
     }

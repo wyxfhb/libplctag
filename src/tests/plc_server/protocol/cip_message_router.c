@@ -47,15 +47,13 @@ util_err_t cip_parse_request(buf_t *input, cip_request_t *request) {
     ok &= buf_read_u8(input, "service", &request->service);
     ok &= buf_read_u8(input, "path_size", &request->path_size);
 
-    if (!ok) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-              "CIP: failed to parse request header");
+    if(!ok) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP: failed to parse request header");
         return buf_get_error(input);
     }
 
-    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-          "CIP: service=0x%02X, path_size=%u words",
-          request->service, request->path_size);
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP: service=0x%02X, path_size=%u words", request->service,
+          request->path_size);
 
     return UTIL_OK;
 }
@@ -79,9 +77,8 @@ util_err_t cip_build_response(buf_t *output, uint8_t service, uint8_t status) {
     /* Extended status size (0 for now) */
     ok &= buf_write_u8(output, "ext_status_size", 0);
 
-    if (!ok) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_ERROR,
-              "CIP: failed to build response header");
+    if(!ok) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_ERROR, "CIP: failed to build response header");
         return buf_get_error(output);
     }
 
@@ -92,14 +89,12 @@ util_err_t cip_build_response(buf_t *output, uint8_t service, uint8_t status) {
  * Main Dispatcher
  * ============================================================================ */
 
-util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output,
-                                       plc_context_t *plc) {
+util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, plc_context_t *plc) {
     /* Parse CIP request header */
     cip_request_t request;
     util_err_t err = cip_parse_request(input, &request);
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-              "CIP dispatch: failed to parse request");
+    if(err != UTIL_OK) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: failed to parse request");
         cip_build_response(output, 0x00, CIP_STATUS_INVALID_PARAM);
         return err;
     }
@@ -107,29 +102,29 @@ util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output,
     /* Parse CIP path */
     cip_path_t path;
     err = cip_parse_path(input, request.path_size, &path);
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-              "CIP dispatch: failed to parse path: %s", util_err_str(err));
+    if(err != UTIL_OK) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: failed to parse path: %s", util_err_str(err));
         cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return err;
     }
 
-    /* For Micro800: Symbolic segment without class ID means Symbol Object (0x6B)
-     * Dispatch to Symbol Object, instance 0 */
-    if (path.symbol_name) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL,
-              "CIP dispatch: routing to Symbol Object (0x6B) for tag '%.*s'",
-              (int)path.symbol_length, path.symbol_name);
+    /* check the first segment in the path */
+    if(path.segment_count == 0) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: empty path");
+        cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
+        return UTIL_EINVAL;
+    }
+
+    if(path.segments[0].type == CIP_SEGMENT_SYMBOLIC) {
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP dispatch: routing to Symbol Object (0x6B) for tag '%.*s'",
+              (int)path.segments[0].symbolic.length, path.segments[0].symbolic.name);
 
         /* Micro800 routes all tag accesses through Symbol Object Class 0x6B */
-        return cip_registry_dispatch(plc->registry, 0x6B, 0,
-                                    request.service, &path,
-                                    input, output, plc);
+        return cip_registry_dispatch(plc->registry, 0x6B, 0, request.service, &path, input, output, plc);
     }
 
     /* If we get here, we couldn't route the request */
-    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN,
-          "CIP dispatch: couldn't determine target object");
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: couldn't determine target object");
     cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
 
     return UTIL_ENOTFOUND;
