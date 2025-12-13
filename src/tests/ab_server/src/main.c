@@ -49,13 +49,13 @@
 #endif
 
 #include "ethernet_ip/eip.h"
-#include "mutex.h"
 #include "plc.h"
 #include "slice.h"
-#include "tcp_server.h"
 #include "utils.h"
-#include "mutex.h"
 #include "../../utils/log.h"
+#include "../../utils/buf.h"
+#include "../../utils/socket.h"
+#include "../../utils/coro_net.h"
 #include "plcs/omron_plc.h"
 #include "plcs/controllogix_plc.h"
 
@@ -66,8 +66,203 @@ static void parse_pccc_tag(const char *tag, plc_s *plc);
 static void parse_cip_tag(const char *tag, plc_s *plc);
 static void parse_struct_definition(const char *struct_str, plc_s *plc);
 static void assign_type_instance_ids(plc_s *plc);
-static slice_s request_handler(slice_s input, slice_s output, void *plc);
 
+/* ============================================================================
+ * EIP Coroutine Infrastructure
+ * ============================================================================ */
+
+typedef struct {
+    coro_task_handle_t handle;
+    coro_net_t *coro_net;
+    plc_s *plc;
+} eip_listener_t;
+
+typedef struct {
+    coro_task_handle_t handle;
+    plc_s *plc;
+    uint8_t recv_buffer[65536 + 128];
+    uint8_t send_buffer[65536 + 128];
+    buf_t recv_buf;
+    buf_t send_buf;
+    int64_t first_byte_us;
+    int64_t recv_complete_us;
+} eip_client_t;
+
+/**
+ * @brief Frame completion checker for EIP protocol.
+ *
+ * Returns UTIL_EAGAIN if more data is needed, UTIL_OK if a complete frame is ready.
+ */
+static util_err_t eip_frame_complete(buf_t *buf, void *context) {
+    (void)context;  /* Not used for EIP */
+
+    /* Need at least EIP header (24 bytes) */
+    if (buf_read_size(buf) < 24) {
+        return UTIL_EAGAIN;
+    }
+
+    /* Read the length field (at offset 2) without modifying read cursor */
+    buf_t temp_buf = buf_checkpoint(buf);
+    uint16_t length;
+    if (!buf_read_u16_le(&temp_buf, "eip_length", &length)) {
+        return UTIL_EAGAIN;
+    }
+
+    /* Total frame size = 24-byte header + payload length */
+    size_t total_needed = 24 + (size_t)length;
+
+    if (buf_read_size(buf) < total_needed) {
+        return UTIL_EAGAIN;  /* Need more data */
+    }
+
+    return UTIL_OK;  /* Complete frame available */
+}
+
+/**
+ * @brief Client handler coroutine for EIP connections.
+ *
+ * Reads EIP requests, converts buf_t to slice_s, dispatches to request_handler,
+ * and sends responses.
+ */
+static void eip_client_handler(coro_task_handle_t handle, socket_t fd, void *context) {
+    eip_client_t *client = (eip_client_t *)context;
+    util_err_t err;
+
+    (void)fd;  /* We have the fd in the handle */
+
+    CORO_START(handle);
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP client handler started");
+
+    while (1) {
+        /* Compact buffer for next read */
+        buf_compact(&client->recv_buf);
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Waiting for EIP request...");
+
+        /* Reset timestamps for new request */
+        client->first_byte_us = 0;
+        client->recv_complete_us = 0;
+
+        /* Read until we get a complete EIP frame */
+        socket_read_yield(handle, &client->recv_buf, eip_frame_complete, NULL,
+                         &client->first_byte_us, &client->recv_complete_us, err);
+
+        if (err != UTIL_OK) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Client error %s during read", util_err_str(err));
+            break;
+        }
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Received EIP request of %zu bytes", buf_read_size(&client->recv_buf));
+
+        /* Convert buf_t to slice_s for the request handler */
+        const uint8_t *read_ptr = buf_read_ptr(&client->recv_buf);
+        slice_s input_slice = slice_make((uint8_t *)read_ptr, buf_read_size(&client->recv_buf));
+        buf_reset(&client->send_buf);
+        slice_s output_slice = slice_make(buf_write_ptr(&client->send_buf), buf_write_size(&client->send_buf));
+
+        /* Dispatch request */
+        slice_s response_slice = eip_dispatch_request(input_slice, output_slice, client->plc);
+
+        /* Check for errors */
+        if (slice_has_err(response_slice)) {
+            int err_code = slice_get_err(response_slice);
+            if (err_code == UTIL_ECLOSED) {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Connection closed by dispatcher");
+                break;
+            } else {
+                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Request error: %s", util_err_str((util_err_t)err_code));
+            }
+        }
+
+        /* Update send buffer with response length and send */
+        buf_reset(&client->send_buf);
+        if (!buf_write_bytes(&client->send_buf, "response", response_slice.data, slice_len(response_slice))) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to write response to buffer");
+            break;
+        }
+        buf_write_advance(&client->send_buf, slice_len(response_slice));
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Sending EIP response of %zu bytes", buf_write_pos(&client->send_buf));
+
+        /* Send response */
+        socket_write_yield(handle, &client->send_buf, err);
+        if (err != UTIL_OK) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Send error: %s", util_err_str(err));
+            break;
+        }
+
+        /* Reset buffers for next request */
+        buf_reset(&client->recv_buf);
+    }
+
+    /* Cleanup */
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP client handler ending");
+    free(client);
+
+    CORO_END(handle);
+}
+
+/**
+ * @brief Listener coroutine for EIP server.
+ *
+ * Accepts incoming connections and spawns client handler coroutines.
+ */
+static void eip_listener_handler(coro_task_handle_t handle, socket_t fd, void *context) {
+    eip_listener_t *listener = (eip_listener_t *)context;
+    socket_t client_fd;
+    socket_address_t client_addr;
+    util_err_t err;
+
+    (void)fd;  /* We have the fd in the handle */
+
+    CORO_START(handle);
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP listener started");
+
+    while (1) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Waiting for incoming connections...");
+
+        socket_accept_yield(handle, &client_fd, &client_addr, err);
+        if (err != UTIL_OK) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Accept error: %s", util_err_str(err));
+            break;
+        }
+
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Accepted EIP client connection (fd %d)", (int)client_fd);
+
+        /* Create client context */
+        eip_client_t *client = (eip_client_t *)calloc(1, sizeof(eip_client_t));
+        if (!client) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate client context");
+            socket_close(client_fd);
+            continue;
+        }
+
+        /* Initialize client buffers */
+        client->recv_buf = buf_init(client->recv_buffer, sizeof(client->recv_buffer));
+        client->send_buf = buf_init(client->send_buffer, sizeof(client->send_buffer));
+        client->plc = listener->plc;
+        client->first_byte_us = 0;
+        client->recv_complete_us = 0;
+
+        /* Add client handler to event loop */
+        coro_task_handle_t client_handle;
+        err = coro_add_task(&client_handle, listener->coro_net, client_fd, eip_client_handler, (void *)client);
+        if (err != UTIL_OK) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to add client handler: %s", util_err_str(err));
+            socket_close(client_fd);
+            free(client);
+            continue;
+        }
+
+        client->handle = client_handle;
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP listener handler ending");
+
+    CORO_END(handle);
+}
 
 #ifdef IS_WINDOWS
 
@@ -144,8 +339,10 @@ void setup_break_handler(void) {
 
 
 int main(int argc, const char **argv) {
-    tcp_server_p server = NULL;
     plc_s plc;
+    coro_net_t *coro_net = NULL;
+    socket_t listen_fd = INVALID_SOCKET;
+    util_err_t err;
 
     /* set up handler for ^C etc. */
     setup_break_handler();
@@ -161,15 +358,85 @@ int main(int argc, const char **argv) {
 
     process_args(argc, argv, &plc);
 
-    /* open a server connection and listen on the right port. */
-    server = tcp_server_create("0.0.0.0", (plc.port_str ? plc.port_str : "44818"), request_handler, &plc, sizeof(plc));
+    /* Create coroutine event loop */
+    err = coro_create(&coro_net, 64);  /* Max 64 concurrent tasks */
+    if (err != UTIL_OK) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to create event loop: %s", util_err_str(err));
+        return 1;
+    }
 
-    tcp_server_start(server, &done);
+    /* Create and bind listen socket */
+    const char *port_str = (plc.port_str ? plc.port_str : "44818");
+    uint16_t port_num = (uint16_t)strtol(port_str, NULL, 10);
+
+    socket_address_t listen_addr = {0};
+    err = socket_address_init(&listen_addr, "0.0.0.0", port_num);
+    if (err != UTIL_OK) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to setup listen address: %s", util_err_str(err));
+        coro_destroy(&coro_net);
+        return 1;
+    }
+
+    listen_fd = socket_create_tcp_server(&listen_addr, 5);
+    if (listen_fd == INVALID_SOCKET) {
+        err = socket_get_err();
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to create server socket: %s", util_err_str(err));
+        coro_destroy(&coro_net);
+        return 1;
+    }
+
+    /* Set socket to non-blocking mode for event loop */
+    err = socket_set_nonblocking(listen_fd, true);
+    if (err != UTIL_OK) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to set non-blocking: %s", util_err_str(err));
+        socket_close(listen_fd);
+        coro_destroy(&coro_net);
+        return 1;
+    }
+
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Listening on port %s", port_str);
+
+    /* Create listener coroutine context */
+    eip_listener_t *listener = (eip_listener_t *)calloc(1, sizeof(eip_listener_t));
+    if (!listener) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate listener context");
+        socket_close(listen_fd);
+        coro_destroy(&coro_net);
+        return 1;
+    }
+    listener->coro_net = coro_net;
+    listener->plc = &plc;
+
+    /* Add listener coroutine to event loop */
+    coro_task_handle_t listener_handle;
+    err = coro_add_task(&listener_handle, coro_net, listen_fd, eip_listener_handler, (void *)listener);
+    if (err != UTIL_OK) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to add listener task: %s", util_err_str(err));
+        free(listener);
+        socket_close(listen_fd);
+        coro_destroy(&coro_net);
+        return 1;
+    }
+
+    listener->handle = listener_handle;
+
+    /* Run event loop until done */
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Starting event loop");
+    while (!done) {
+        err = coro_run(&coro_net, 100);  /* 100ms tick interval */
+        if (err != UTIL_OK && err != UTIL_EAGAIN) {
+            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Event loop error: %s", util_err_str(err));
+            break;
+        }
+    }
 
     /* Dump fairness statistics before shutdown */
     dump_fairness_stats(&plc);
 
-    tcp_server_destroy(server);
+    /* Cleanup */
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Shutting down event loop");
+    socket_close(listen_fd);
+    coro_destroy(&coro_net);
 
     return 0;
 }
@@ -645,8 +912,6 @@ void parse_pccc_tag(const char *tag_str, plc_s *plc) {
         return;
     }
 
-    /* create the tag data mutex */
-    if(mutex_create(&(tag->data_mutex)) != MUTEX_STATUS_OK) { pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to create tag data mutex!"); }
 
     /* try to match the two parts of a tag definition string. */
 
@@ -810,12 +1075,8 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
         return;
     }
 
-    /* create the tag data mutex */
-    if(mutex_create(&(tag->data_mutex)) != MUTEX_STATUS_OK) { pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to create tag data mutex!"); }
 
 
-    /* create the tag data mutex */
-    if(mutex_create(&(tag->data_mutex)) != MUTEX_STATUS_OK) { pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to create tag data mutex!"); }
 
 
     /* try to match the three parts of a tag definition string. */
@@ -1312,25 +1573,3 @@ void assign_type_instance_ids(plc_s *plc) {
  * request type handler.
  */
 
-slice_s request_handler(slice_s input, slice_s output, void *plc_arg) {
-    // Remember that we get a copy of the plc_arg/context contents. So values are frozen
-    // in time, but references are to a shared resource and must be mutex'ed.
-    plc_s *plc = (plc_s *)plc_arg;
-
-    /* check to see if we have a full packet. */
-    if(slice_len(input) >= EIP_HEADER_SIZE) {
-        uint16_t eip_len = slice_get_uint16_le(input, 2);
-
-        if(slice_len(input) >= (size_t)(EIP_HEADER_SIZE + eip_len)) {
-            slice_s resp = eip_dispatch_request(input, output, plc);
-
-            /* if there is a response delay requested, then wait a bit. */
-            if(plc->response_delay > 0) { util_sleep_ms(plc->response_delay); }
-
-            return resp;
-        }
-    }
-
-    /* we do not have a complete packet, get more data. */
-    return slice_make_err(TCP_SERVER_INCOMPLETE);
-}

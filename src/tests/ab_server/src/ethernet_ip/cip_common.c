@@ -36,7 +36,6 @@
 #include "../slice.h"
 #include "../utils.h"
 #include "../../../utils/log.h"
-#include "../mutex.h"
 #include <string.h>
 
 /* CIP Error codes */
@@ -588,11 +587,8 @@ bool cip_read_tag_data(
         all_data_fit = false;
     }
 
-    /* Copy data with mutual exclusion */
-    critical_block(tag->data_mutex) {
-        /* Use memcpy directly for raw buffer copy */
-        memcpy(output_buffer, tag->data + offset_bytes, copy_size);
-    }
+    /* Copy data */
+    memcpy(output_buffer, tag->data + offset_bytes, copy_size);
 
     *actual_bytes_read = copy_size;
     return all_data_fit;
@@ -635,11 +631,8 @@ bool cip_write_tag_data(
         return false;
     }
 
-    /* Write data with mutual exclusion */
-    critical_block(tag->data_mutex) {
-        /* Use memcpy directly for raw buffer copy */
-        memcpy(tag->data + offset_bytes, input_buffer, input_buffer_size);
-    }
+    /* Write data */
+    memcpy(tag->data + offset_bytes, input_buffer, input_buffer_size);
 
     return true;
 }

@@ -718,13 +718,10 @@ slice_s handle_read_request(uint8_t cip_service, slice_s cip_service_path, slice
     }
 
     /* copy the data into the response payload. */
-    critical_block(tag->data_mutex) {
-        if(!slice_copy_data_in(cip_response_payload_slice, tag->data + request_start_byte_offset, copy_size)) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to copy the data into the response payload!");
-            // FIXME - need other error.
-            cip_err = CIP_ERR_INVALID_PARAM;
-            break;
-        }
+    if(!slice_copy_data_in(cip_response_payload_slice, tag->data + request_start_byte_offset, copy_size)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to copy the data into the response payload!");
+        // FIXME - need other error.
+        cip_err = CIP_ERR_INVALID_PARAM;
     }
 
     if(cip_err != CIP_OK) { return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, cip_err, false, 0); }
@@ -872,13 +869,10 @@ slice_s handle_write_request(uint8_t cip_service, slice_s cip_service_path, slic
         return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, CIP_ERR_INVALID_PARAM, false, 0);
     }
 
-    critical_block(tag->data_mutex) {
-        if(!slice_copy_data_out(tag->data + request_start_byte_offset, request_end_byte_offset - request_start_byte_offset,
-                                write_request_payload_slice)) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to copy the data into the tag!");
-            cip_err = CIP_ERR_INVALID_PARAM;
-            break;
-        }
+    if(!slice_copy_data_out(tag->data + request_start_byte_offset, request_end_byte_offset - request_start_byte_offset,
+                            write_request_payload_slice)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unable to copy the data into the tag!");
+        cip_err = CIP_ERR_INVALID_PARAM;
     }
 
     if(cip_err != CIP_OK) { return make_cip_pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, output, cip_service, cip_err, false, 0); }

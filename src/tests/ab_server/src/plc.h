@@ -37,7 +37,6 @@
 #include <stdint.h>
 
 #include "compat.h"
-#include "mutex.h"
 #include "slice.h"
 
 typedef uint16_t tag_type_t;
@@ -113,11 +112,6 @@ struct tag_def_s {
     size_t num_dimensions;
     size_t dimensions[3];
     uint8_t *data;
-    /* Note we make a big simplifying assumption that the only access to the tag requiring thread
-       protection, is to the data. The rest of the fields (the list itself, and the tags' names
-       and types) are expected to be created once, in a single thread. From then on those fields
-       are expected to be read-only (even if by multiple threads). */
-    mutex_p data_mutex;
 
     /* Fairness tracking - per-request latency statistics */
     atomic_int32_t request_count;

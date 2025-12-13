@@ -38,29 +38,25 @@ set(AB_SERVER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/memory.c
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/memory.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/mutex.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/mutex.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/pccc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/pccc.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/plc.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/slice.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/socket.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/socket.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/tcp_server.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/tcp_server.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/thread.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/thread.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/utils.c
     ${CMAKE_CURRENT_SOURCE_DIR}/ab_server/src/utils.h
 
     # Shared utilities from src/tests/utils
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/buf.c
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/buf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/coro_net.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/coro_net.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/err.c
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/err.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/log.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/log_modules.def
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/socket.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/socket.h
 )
 
 # Add ab_server executable
