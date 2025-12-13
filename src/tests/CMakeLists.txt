@@ -83,4 +83,9 @@ endif()
 message("Building Modbus TCP server.")
 add_subdirectory("modbus_server")
 
+# Build the PLC Server (EtherNet/IP simulator)
+# Greenfield implementation using event-driven coroutine architecture
+message("Building EtherNet/IP PLC server.")
+add_subdirectory("plc_server")
+
 
