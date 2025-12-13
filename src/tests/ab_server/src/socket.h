@@ -33,7 +33,46 @@
 
 #pragma once
 
-#include "plc.h"
+#include "compat.h"
+#include "err.h"
 #include "slice.h"
 
-extern slice_s dispatch_pccc_request(slice_s input, slice_s output, plc_s *context);
+#include <stdint.h>
+
+#ifndef IS_WINDOWS
+typedef int SOCKET;
+#    define INVALID_SOCKET (-1)
+#else
+#    include <winsock2.h>
+#endif
+
+/* ===== SOCKET API ===== */
+
+/* Open a TCP client connection
+ * Returns: Valid SOCKET file descriptor (>= 0) on success
+ *          Negative error code (from err_t) on failure */
+extern SOCKET socket_open_tcp_client(const char *remote_host, const char *remote_port);
+
+/* Open a TCP server socket
+ * Returns: Valid SOCKET file descriptor (>= 0) on success
+ *          Negative error code (from err_t) on failure */
+extern SOCKET socket_open_tcp_server(const char *listening_port);
+
+/* Close a socket */
+extern void socket_close(SOCKET sock);
+
+/* Accept an incoming connection
+ * Returns: 0 on success, error code on failure
+ *          On success, *out_client_fd contains the accepted socket
+ *          On failure, *out_client_fd is set to INVALID_SOCKET */
+extern int socket_accept(SOCKET sock, uint32_t timeout_ms, SOCKET *out_client_fd);
+
+/* Read from socket into buffer
+ * Returns: slice_s with data read from socket
+ *          On error: slice_has_err() is true, slice_get_err() returns negative error code */
+extern slice_s socket_read(SOCKET sock, slice_s in_buf, uint32_t timeout_ms);
+
+/* Write to socket from buffer
+ * Returns: slice_s with length set to bytes written
+ *          On error: slice_has_err() is true, slice_get_err() returns negative error code */
+extern slice_s socket_write(SOCKET sock, slice_s out_buf, uint32_t timeout_ms);

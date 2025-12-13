@@ -36,4 +36,11 @@
 #include "plc.h"
 #include "slice.h"
 
-extern slice_s dispatch_pccc_request(slice_s input, slice_s output, plc_s *context);
+/* EIP header size is 24 bytes. */
+#define EIP_HEADER_SIZE (24)
+
+/* EIP errors. */
+#define EIP_ERR_BAD_REQUEST     ((uint32_t)1) /* FIXME */
+
+
+extern slice_s eip_dispatch_request(slice_s input, slice_s output, plc_s *context);

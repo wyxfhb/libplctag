@@ -48,221 +48,22 @@
 #    include <strings.h>
 #endif
 
-#include "ethernet_ip/eip.h"
+#include "eip.h"
+#include "mutex.h"
 #include "plc.h"
 #include "slice.h"
+#include "tcp_server.h"
 #include "utils.h"
-#include "../../utils/log.h"
-#include "../../utils/buf.h"
-#include "../../utils/socket.h"
-#include "../../utils/coro_net.h"
-#include "plcs/omron_plc.h"
-#include "plcs/controllogix_plc.h"
+#include "mutex.h"
+#include "log.h"
 
 static void usage(void);
 static void process_args(int argc, const char **argv, plc_s *plc);
 static void parse_path(const char *path, plc_s *plc);
 static void parse_pccc_tag(const char *tag, plc_s *plc);
 static void parse_cip_tag(const char *tag, plc_s *plc);
-static void parse_struct_definition(const char *struct_str, plc_s *plc);
-static void assign_type_instance_ids(plc_s *plc);
+static slice_s request_handler(slice_s input, slice_s output, void *plc);
 
-/* ============================================================================
- * EIP Coroutine Infrastructure
- * ============================================================================ */
-
-typedef struct {
-    coro_task_handle_t handle;
-    coro_net_t *coro_net;
-    plc_s *plc;
-} eip_listener_t;
-
-typedef struct {
-    coro_task_handle_t handle;
-    plc_s *plc;
-    uint8_t recv_buffer[65536 + 128];
-    uint8_t send_buffer[65536 + 128];
-    buf_t recv_buf;
-    buf_t send_buf;
-    int64_t first_byte_us;
-    int64_t recv_complete_us;
-} eip_client_t;
-
-/**
- * @brief Frame completion checker for EIP protocol.
- *
- * Returns UTIL_EAGAIN if more data is needed, UTIL_OK if a complete frame is ready.
- */
-static util_err_t eip_frame_complete(buf_t *buf, void *context) {
-    (void)context;  /* Not used for EIP */
-
-    /* Need at least EIP header (24 bytes) */
-    if (buf_read_size(buf) < 24) {
-        return UTIL_EAGAIN;
-    }
-
-    /* Read the length field (at offset 2) without modifying read cursor */
-    buf_t temp_buf = buf_checkpoint(buf);
-    uint16_t length;
-    if (!buf_read_u16_le(&temp_buf, "eip_length", &length)) {
-        return UTIL_EAGAIN;
-    }
-
-    /* Total frame size = 24-byte header + payload length */
-    size_t total_needed = 24 + (size_t)length;
-
-    if (buf_read_size(buf) < total_needed) {
-        return UTIL_EAGAIN;  /* Need more data */
-    }
-
-    return UTIL_OK;  /* Complete frame available */
-}
-
-/**
- * @brief Client handler coroutine for EIP connections.
- *
- * Reads EIP requests, converts buf_t to slice_s, dispatches to request_handler,
- * and sends responses.
- */
-static void eip_client_handler(coro_task_handle_t handle, socket_t fd, void *context) {
-    eip_client_t *client = (eip_client_t *)context;
-    util_err_t err;
-
-    (void)fd;  /* We have the fd in the handle */
-
-    CORO_START(handle);
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP client handler started");
-
-    while (1) {
-        /* Compact buffer for next read */
-        buf_compact(&client->recv_buf);
-
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Waiting for EIP request...");
-
-        /* Reset timestamps for new request */
-        client->first_byte_us = 0;
-        client->recv_complete_us = 0;
-
-        /* Read until we get a complete EIP frame */
-        socket_read_yield(handle, &client->recv_buf, eip_frame_complete, NULL,
-                         &client->first_byte_us, &client->recv_complete_us, err);
-
-        if (err != UTIL_OK) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Client error %s during read", util_err_str(err));
-            break;
-        }
-
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Received EIP request of %zu bytes", buf_read_size(&client->recv_buf));
-
-        /* Convert buf_t to slice_s for the request handler */
-        const uint8_t *read_ptr = buf_read_ptr(&client->recv_buf);
-        slice_s input_slice = slice_make((uint8_t *)read_ptr, buf_read_size(&client->recv_buf));
-        buf_reset(&client->send_buf);
-        slice_s output_slice = slice_make(buf_write_ptr(&client->send_buf), buf_write_size(&client->send_buf));
-
-        /* Dispatch request */
-        slice_s response_slice = eip_dispatch_request(input_slice, output_slice, client->plc);
-
-        /* Check for errors */
-        if (slice_has_err(response_slice)) {
-            int err_code = slice_get_err(response_slice);
-            if (err_code == UTIL_ECLOSED) {
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Connection closed by dispatcher");
-                break;
-            } else {
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Request error: %s", util_err_str((util_err_t)err_code));
-            }
-        }
-
-        /* Update send buffer with response length and send */
-        buf_reset(&client->send_buf);
-        if (!buf_write_bytes(&client->send_buf, "response", response_slice.data, slice_len(response_slice))) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to write response to buffer");
-            break;
-        }
-        buf_write_advance(&client->send_buf, slice_len(response_slice));
-
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Sending EIP response of %zu bytes", buf_write_pos(&client->send_buf));
-
-        /* Send response */
-        socket_write_yield(handle, &client->send_buf, err);
-        if (err != UTIL_OK) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Send error: %s", util_err_str(err));
-            break;
-        }
-
-        /* Reset buffers for next request */
-        buf_reset(&client->recv_buf);
-    }
-
-    /* Cleanup */
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP client handler ending");
-    free(client);
-
-    CORO_END(handle);
-}
-
-/**
- * @brief Listener coroutine for EIP server.
- *
- * Accepts incoming connections and spawns client handler coroutines.
- */
-static void eip_listener_handler(coro_task_handle_t handle, socket_t fd, void *context) {
-    eip_listener_t *listener = (eip_listener_t *)context;
-    socket_t client_fd;
-    socket_address_t client_addr;
-    util_err_t err;
-
-    (void)fd;  /* We have the fd in the handle */
-
-    CORO_START(handle);
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP listener started");
-
-    while (1) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_DETAIL, "Waiting for incoming connections...");
-
-        socket_accept_yield(handle, &client_fd, &client_addr, err);
-        if (err != UTIL_OK) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Accept error: %s", util_err_str(err));
-            break;
-        }
-
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Accepted EIP client connection (fd %d)", (int)client_fd);
-
-        /* Create client context */
-        eip_client_t *client = (eip_client_t *)calloc(1, sizeof(eip_client_t));
-        if (!client) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate client context");
-            socket_close(client_fd);
-            continue;
-        }
-
-        /* Initialize client buffers */
-        client->recv_buf = buf_init(client->recv_buffer, sizeof(client->recv_buffer));
-        client->send_buf = buf_init(client->send_buffer, sizeof(client->send_buffer));
-        client->plc = listener->plc;
-        client->first_byte_us = 0;
-        client->recv_complete_us = 0;
-
-        /* Add client handler to event loop */
-        coro_task_handle_t client_handle;
-        err = coro_add_task(&client_handle, listener->coro_net, client_fd, eip_client_handler, (void *)client);
-        if (err != UTIL_OK) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to add client handler: %s", util_err_str(err));
-            socket_close(client_fd);
-            free(client);
-            continue;
-        }
-
-        client->handle = client_handle;
-    }
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "EIP listener handler ending");
-
-    CORO_END(handle);
-}
 
 #ifdef IS_WINDOWS
 
@@ -275,33 +76,33 @@ int WINAPI CtrlHandler(DWORD fdwCtrlType) {
     switch(fdwCtrlType) {
             // Handle the CTRL-C signal.
         case CTRL_C_EVENT:
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "^C event");
+            log_info("^C event");
             done = 1;
             return TRUE;
 
             // CTRL-CLOSE: confirm that the user wants to exit.
         case CTRL_CLOSE_EVENT:
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Close event");
+            log_info("Close event");
             done = 1;
             return TRUE;
 
             // Pass other signals to the next handler.
         case CTRL_BREAK_EVENT:
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "^Break event");
+            log_info("^Break event");
             done = 1;
             return TRUE;
 
         case CTRL_LOGOFF_EVENT:
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Logoff event");
+            log_info("Logoff event");
             done = 1;
             return TRUE;
 
         case CTRL_SHUTDOWN_EVENT:
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Shutdown event");
+            log_info("Shutdown event");
             done = 1;
             return TRUE;
 
-        default: pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Default Event: %d", fdwCtrlType); return FALSE;
+        default: log_info("Default Event: %d", fdwCtrlType); return FALSE;
     }
 }
 
@@ -339,15 +140,13 @@ void setup_break_handler(void) {
 
 
 int main(int argc, const char **argv) {
+    tcp_server_p server = NULL;
     plc_s plc;
-    coro_net_t *coro_net = NULL;
-    socket_t listen_fd = INVALID_SOCKET;
-    util_err_t err;
 
     /* set up handler for ^C etc. */
     setup_break_handler();
 
-    log_set_all_modules(LOG_LEVEL_DETAIL);
+    log_set_level(LOG_LEVEL_DETAIL);
 
     /* clear out context to make sure we do not get gremlins */
     // NOLINTNEXTLINE
@@ -358,85 +157,15 @@ int main(int argc, const char **argv) {
 
     process_args(argc, argv, &plc);
 
-    /* Create coroutine event loop */
-    err = coro_create(&coro_net, 64);  /* Max 64 concurrent tasks */
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to create event loop: %s", util_err_str(err));
-        return 1;
-    }
+    /* open a server connection and listen on the right port. */
+    server = tcp_server_create("0.0.0.0", (plc.port_str ? plc.port_str : "44818"), request_handler, &plc, sizeof(plc));
 
-    /* Create and bind listen socket */
-    const char *port_str = (plc.port_str ? plc.port_str : "44818");
-    uint16_t port_num = (uint16_t)strtol(port_str, NULL, 10);
-
-    socket_address_t listen_addr = {0};
-    err = socket_address_init(&listen_addr, "0.0.0.0", port_num);
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to setup listen address: %s", util_err_str(err));
-        coro_destroy(&coro_net);
-        return 1;
-    }
-
-    listen_fd = socket_create_tcp_server(&listen_addr, 5);
-    if (listen_fd == INVALID_SOCKET) {
-        err = socket_get_err();
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to create server socket: %s", util_err_str(err));
-        coro_destroy(&coro_net);
-        return 1;
-    }
-
-    /* Set socket to non-blocking mode for event loop */
-    err = socket_set_nonblocking(listen_fd, true);
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to set non-blocking: %s", util_err_str(err));
-        socket_close(listen_fd);
-        coro_destroy(&coro_net);
-        return 1;
-    }
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Listening on port %s", port_str);
-
-    /* Create listener coroutine context */
-    eip_listener_t *listener = (eip_listener_t *)calloc(1, sizeof(eip_listener_t));
-    if (!listener) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate listener context");
-        socket_close(listen_fd);
-        coro_destroy(&coro_net);
-        return 1;
-    }
-    listener->coro_net = coro_net;
-    listener->plc = &plc;
-
-    /* Add listener coroutine to event loop */
-    coro_task_handle_t listener_handle;
-    err = coro_add_task(&listener_handle, coro_net, listen_fd, eip_listener_handler, (void *)listener);
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to add listener task: %s", util_err_str(err));
-        free(listener);
-        socket_close(listen_fd);
-        coro_destroy(&coro_net);
-        return 1;
-    }
-
-    listener->handle = listener_handle;
-
-    /* Run event loop until done */
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Starting event loop");
-    while (!done) {
-        err = coro_run(&coro_net, 100);  /* 100ms tick interval */
-        if (err != UTIL_OK && err != UTIL_EAGAIN) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Event loop error: %s", util_err_str(err));
-            break;
-        }
-    }
+    tcp_server_start(server, &done);
 
     /* Dump fairness statistics before shutdown */
     dump_fairness_stats(&plc);
 
-    /* Cleanup */
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Shutting down event loop");
-    socket_close(listen_fd);
-    coro_destroy(&coro_net);
+    tcp_server_destroy(server);
 
     return 0;
 }
@@ -493,7 +222,6 @@ void process_args(int argc, const char **argv, plc_s *plc) {
     /* make sure that the reject FO count is zero. */
     plc->reject_fo_count = 0;
 
-    /* PASS 1: Process --plc= only to set PLC type first (order-independent) */
     for(int i = 0; i < argc; i++) {
         if(strncmp(argv[i], "--plc=", 6) == 0) {
             if(has_plc) {
@@ -601,10 +329,7 @@ void process_args(int argc, const char **argv, plc_s *plc) {
                 usage();
             }
         }
-    }
 
-    /* PASS 1b: Process all other arguments except --tag= (PLC type is now known) */
-    for(int i = 0; i < argc; i++) {
         if(strncmp(argv[i], "--path=", 7) == 0) {
             parse_path(&(argv[i][7]), plc);
             has_path = true;
@@ -612,70 +337,6 @@ void process_args(int argc, const char **argv, plc_s *plc) {
 
         if(strncmp(argv[i], "--port=", 7) == 0) { plc->port_str = &(argv[i][7]); }
 
-        if(strncmp(argv[i], "--struct=", 9) == 0) {
-            /* Structure types are only supported for Omron PLCs */
-            if (plc && plc->plc_type == PLC_OMRON) {
-                parse_struct_definition(&(argv[i][9]), plc);
-            } else {
-                // NOLINTNEXTLINE
-                fprintf(stderr, "Structure definitions (--struct=) are only supported for Omron PLC type!\n");
-                usage();
-            }
-            continue;
-        }
-
-        if(strcmp(argv[i], "--debug") == 0) { debug_on(); }
-
-        if(strncmp(argv[i], "--reject_fo=", 12) == 0) {
-            if(plc) {
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Setting reject ForwardOpen count to %d.", atoi(&argv[i][12]));
-                plc->reject_fo_count = atoi(&argv[i][12]);
-            }
-        }
-
-        if(strncmp(argv[i], "--delay=", 8) == 0) {
-            if(plc) {
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Setting response delay to %dms.", atoi(&argv[i][8]));
-                plc->response_delay = atoi(&argv[i][8]);
-            }
-        }
-
-        /* Skip --plc= and --tag= in this pass */
-    }
-
-    /* Finalize structure definitions now that all --struct= have been parsed */
-    if (plc) {
-        assign_type_instance_ids(plc);
-    }
-
-    /* Initialize PLC-type specific dispatcher */
-    if (plc) {
-        switch (plc->plc_type) {
-            case PLC_OMRON:
-                plc->dispatcher = omron_get_dispatcher();
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Initialized Omron dispatcher");
-                break;
-            case PLC_CONTROL_LOGIX:
-                plc->dispatcher = controllogix_get_dispatcher();
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Initialized ControlLogix dispatcher");
-                break;
-            case PLC_MICRO800:
-            case PLC_PLC5:
-            case PLC_SLC:
-            case PLC_MICROLOGIX:
-                /* Other PLC types: dispatchers to be implemented in future phases */
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Dispatcher for PLC type %d not yet implemented", plc->plc_type);
-                // NOLINTNEXTLINE
-                fprintf(stderr, "WARNING: Dispatcher for this PLC type is not yet implemented!\n");
-                break;
-            default:
-                pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unknown PLC type: %d", plc->plc_type);
-                break;
-        }
-    }
-
-    /* PASS 2: Process --tag= arguments (now that structures are finalized) */
-    for(int i = 0; i < argc; i++) {
         if(strncmp(argv[i], "--tag=", 6) == 0) {
             if(plc && (plc->plc_type == PLC_PLC5 || plc->plc_type == PLC_SLC || plc->plc_type == PLC_MICROLOGIX)) {
                 parse_pccc_tag(&(argv[i][6]), plc);
@@ -683,6 +344,22 @@ void process_args(int argc, const char **argv, plc_s *plc) {
                 parse_cip_tag(&(argv[i][6]), plc);
             }
             has_tag = true;
+        }
+
+        if(strcmp(argv[i], "--debug") == 0) { debug_on(); }
+
+        if(strncmp(argv[i], "--reject_fo=", 12) == 0) {
+            if(plc) {
+                log_info("Setting reject ForwardOpen count to %d.", atoi(&argv[i][12]));
+                plc->reject_fo_count = atoi(&argv[i][12]);
+            }
+        }
+
+        if(strncmp(argv[i], "--delay=", 8) == 0) {
+            if(plc) {
+                log_info("Setting response delay to %dms.", atoi(&argv[i][8]));
+                plc->response_delay = atoi(&argv[i][8]);
+            }
         }
     }
 
@@ -714,7 +391,7 @@ void parse_path(const char *path_str, plc_s *plc) {
         plc->path[0] = (uint8_t)tmp_path[0];
         plc->path[1] = (uint8_t)tmp_path[1];
 
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processed path %d,%d.", plc->path[0], plc->path[1]);
+        log_info("Processed path %d,%d.", plc->path[0], plc->path[1]);
     } else {
         // NOLINTNEXTLINE
         fprintf(stderr, "Error processing path \"%s\"!  Path must be two numbers separated by a comma.\n", path_str);
@@ -736,167 +413,6 @@ void parse_path(const char *path_str, plc_s *plc) {
  * The size field is a single positive integer.
  */
 
-/* Helper function: Get alignment requirement for CIP type */
-static size_t get_type_alignment(tag_type_t type) {
-    switch(type) {
-        case TAG_CIP_TYPE_BOOL:
-        case TAG_CIP_TYPE_SINT:
-        case TAG_CIP_TYPE_USINT:
-            return 1;
-        case TAG_CIP_TYPE_INT:
-        case TAG_CIP_TYPE_UINT:
-            return 2;
-        case TAG_CIP_TYPE_DINT:
-        case TAG_CIP_TYPE_UDINT:
-        case TAG_CIP_TYPE_REAL:
-            return 4;
-        case TAG_CIP_TYPE_LINT:
-        case TAG_CIP_TYPE_ULINT:
-        case TAG_CIP_TYPE_LREAL:
-            return 8;
-        case TAG_CIP_TYPE_STRING:
-            return 2;  /* STRING starts with 2-byte length */
-        default:
-            return 1;
-    }
-}
-
-/* Helper function: Align offset to boundary */
-static size_t align_offset(size_t offset, size_t alignment) {
-    if (alignment == 0) return offset;
-    return (offset + alignment - 1) & ~(alignment - 1);
-}
-
-/* Helper function: Find structure type by name */
-static type_def_s* find_type_by_name(plc_s *plc, const char *name) {
-    type_def_s *type = plc->types;
-    while (type) {
-        if (strcmp(type->name, name) == 0) {
-            return type;
-        }
-        type = type->next_type;
-    }
-    return NULL;
-}
-
-/* Helper function: Map type string to CIP type and size */
-static bool map_type_string_to_cip(const char *type_str, tag_type_t *out_type, size_t *out_size) {
-    if (str_cmp_i(type_str, "SINT") == 0) {
-        *out_type = TAG_CIP_TYPE_SINT;
-        *out_size = 1;
-    } else if (str_cmp_i(type_str, "INT") == 0) {
-        *out_type = TAG_CIP_TYPE_INT;
-        *out_size = 2;
-    } else if (str_cmp_i(type_str, "DINT") == 0) {
-        *out_type = TAG_CIP_TYPE_DINT;
-        *out_size = 4;
-    } else if (str_cmp_i(type_str, "LINT") == 0) {
-        *out_type = TAG_CIP_TYPE_LINT;
-        *out_size = 8;
-    } else if (str_cmp_i(type_str, "USINT") == 0) {
-        *out_type = TAG_CIP_TYPE_USINT;
-        *out_size = 1;
-    } else if (str_cmp_i(type_str, "UINT") == 0) {
-        *out_type = TAG_CIP_TYPE_UINT;
-        *out_size = 2;
-    } else if (str_cmp_i(type_str, "UDINT") == 0) {
-        *out_type = TAG_CIP_TYPE_UDINT;
-        *out_size = 4;
-    } else if (str_cmp_i(type_str, "ULINT") == 0) {
-        *out_type = TAG_CIP_TYPE_ULINT;
-        *out_size = 8;
-    } else if (str_cmp_i(type_str, "REAL") == 0) {
-        *out_type = TAG_CIP_TYPE_REAL;
-        *out_size = 4;
-    } else if (str_cmp_i(type_str, "LREAL") == 0) {
-        *out_type = TAG_CIP_TYPE_LREAL;
-        *out_size = 8;
-    } else if (str_cmp_i(type_str, "STRING") == 0) {
-        *out_type = TAG_CIP_TYPE_STRING;
-        *out_size = 88;
-    } else if (str_cmp_i(type_str, "BOOL") == 0) {
-        *out_type = TAG_CIP_TYPE_BOOL;
-        *out_size = 1;
-    } else {
-        return false;
-    }
-    return true;
-}
-
-
-/* Calculate CRC16-CCITT for data
- * Uses same algorithm as aphyt: poly=0xa001, initial=0x0000
- */
-static uint16_t calculate_crc16(const uint8_t *data, size_t len) {
-    uint16_t crc = 0x0000;
-    const uint16_t poly = 0xa001;
-
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++) {
-            uint16_t carry = crc & 1;
-            crc >>= 1;
-            if (carry) {
-                crc ^= poly;
-            }
-        }
-    }
-
-    return crc;
-}
-
-
-/* Calculate CRC16 for structure type definition
- * Hashes: type name + all member names and types (in order)
- */
-static uint16_t calculate_structure_crc(type_def_s *type) {
-    /* Build hash data: type name + member info */
-    size_t hash_size = strlen(type->name);
-
-    /* Count total size needed */
-    member_def_s *member = type->members;
-    while (member) {
-        hash_size += strlen(member->name) + strlen(member->member_type_string);
-        member = member->next_member;
-    }
-
-    /* Build hash data */
-    uint8_t *hash_data = calloc(hash_size, 1);
-    if (!hash_data) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate hash_data for CRC calculation");
-        return 0;
-    }
-
-    size_t offset = 0;
-
-    /* Add type name */
-    size_t name_len = strlen(type->name);
-    memcpy(hash_data + offset, type->name, name_len);
-    offset += name_len;
-
-    /* Add member info */
-    member = type->members;
-    while (member) {
-        /* Add member name */
-        name_len = strlen(member->name);
-        memcpy(hash_data + offset, member->name, name_len);
-        offset += name_len;
-
-        /* Add member type string */
-        size_t type_len = strlen(member->member_type_string);
-        memcpy(hash_data + offset, member->member_type_string, type_len);
-        offset += type_len;
-
-        member = member->next_member;
-    }
-
-    /* Calculate CRC */
-    uint16_t crc = calculate_crc16(hash_data, offset);
-
-    free(hash_data);
-    return crc;
-}
-
 void parse_pccc_tag(const char *tag_str, plc_s *plc) {
     tag_def_s *tag = calloc(1, sizeof(*tag));
     char data_file_name[200] = {0};
@@ -905,17 +421,19 @@ void parse_pccc_tag(const char *tag_str, plc_s *plc) {
     size_t start = 0;
     size_t len = 0;
 
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Starting.");
+    log_info("Starting.");
 
     if(!tag) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to allocate memory for new tag!");
+        log_error("Unable to allocate memory for new tag!");
         return;
     }
 
+    /* create the tag data mutex */
+    if(mutex_create(&(tag->data_mutex)) != MUTEX_STATUS_OK) { log_error("Unable to create tag data mutex!"); }
 
     /* try to match the two parts of a tag definition string. */
 
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Match data file.");
+    log_info("Match data file.");
 
     /* first match the data file. */
     start = 0;
@@ -930,27 +448,27 @@ void parse_pccc_tag(const char *tag_str, plc_s *plc) {
 
         /* check data file for a match. */
         if(str_cmp_i(data_file_name, "B3") == 0) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Found B3 data file.");
+            log_info("Found B3 data file.");
             tag->tag_type = TAG_PCCC_TYPE_BIT;
             tag->elem_size = 2;
             tag->data_file_num = 3;
         } else if(str_cmp_i(data_file_name, "N7") == 0) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Found N7 data file.");
+            log_info("Found N7 data file.");
             tag->tag_type = TAG_PCCC_TYPE_INT;
             tag->elem_size = 2;
             tag->data_file_num = 7;
         } else if(str_cmp_i(data_file_name, "F8") == 0) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Found F8 data file.");
+            log_info("Found F8 data file.");
             tag->tag_type = TAG_PCCC_TYPE_REAL;
             tag->elem_size = 4;
             tag->data_file_num = 8;
         } else if(str_cmp_i(data_file_name, "ST18") == 0) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Found ST18 data file.");
+            log_info("Found ST18 data file.");
             tag->tag_type = TAG_PCCC_TYPE_STRING;
             tag->elem_size = 84;
             tag->data_file_num = 18;
         } else if(str_cmp_i(data_file_name, "L19") == 0) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Found L19 data file.");
+            log_info("Found L19 data file.");
             tag->tag_type = TAG_PCCC_TYPE_DINT;
             tag->elem_size = 4;
             tag->data_file_num = 19;
@@ -1026,7 +544,7 @@ void parse_pccc_tag(const char *tag_str, plc_s *plc) {
     }
 
     /* allocate the tag data array. */
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "allocating %zu elements of %zu bytes each.", tag->elem_count, tag->elem_size);
+    log_info("allocating %zu elements of %zu bytes each.", tag->elem_count, tag->elem_size);
     tag->data = calloc(tag->elem_count, (size_t)tag->elem_size);
     if(!tag->data) {
         // NOLINTNEXTLINE
@@ -1035,7 +553,7 @@ void parse_pccc_tag(const char *tag_str, plc_s *plc) {
         exit(1);
     }
 
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processed \"%s\" into tag %s of type %x with dimensions (%zu, %zu, %zu).", tag_str, tag->name, tag->tag_type,
+    log_info("Processed \"%s\" into tag %s of type %x with dimensions (%zu, %zu, %zu).", tag_str, tag->name, tag->tag_type,
          tag->dimensions[0], tag->dimensions[1], tag->dimensions[2]);
 
     /* add the tag to the list. */
@@ -1071,12 +589,16 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
     size_t len = 0;
 
     if(!tag) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Unable to allocate memory for new tag!");
+        log_error("Unable to allocate memory for new tag!");
         return;
     }
 
+    /* create the tag data mutex */
+    if(mutex_create(&(tag->data_mutex)) != MUTEX_STATUS_OK) { log_error("Unable to create tag data mutex!"); }
 
 
+    /* create the tag data mutex */
+    if(mutex_create(&(tag->data_mutex)) != MUTEX_STATUS_OK) { log_error("Unable to create tag data mutex!"); }
 
 
     /* try to match the three parts of a tag definition string. */
@@ -1145,29 +667,35 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
         usage();
     }
 
-    /* match the type - try simple types first */
-    if (map_type_string_to_cip(type_str, &tag->tag_type, &tag->elem_size)) {
-        /* Successfully mapped to a simple type */
-        tag->type_def = NULL;
+    /* match the type. */
+    if(str_cmp_i(type_str, "SINT") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_SINT;
+        tag->elem_size = 1;
+    } else if(str_cmp_i(type_str, "INT") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_INT;
+        tag->elem_size = 2;
+    } else if(str_cmp_i(type_str, "DINT") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_DINT;
+        tag->elem_size = 4;
+    } else if(str_cmp_i(type_str, "LINT") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_LINT;
+        tag->elem_size = 8;
+    } else if(str_cmp_i(type_str, "REAL") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_REAL;
+        tag->elem_size = 4;
+    } else if(str_cmp_i(type_str, "LREAL") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_LREAL;
+        tag->elem_size = 8;
+    } else if(str_cmp_i(type_str, "STRING") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_STRING;
+        tag->elem_size = 88;
+    } else if(str_cmp_i(type_str, "BOOL") == 0) {
+        tag->tag_type = TAG_CIP_TYPE_BOOL;
+        tag->elem_size = 1;
     } else {
-        /* Try to find a user-defined structure type (Omron only) */
-        if (plc && plc->plc_type == PLC_OMRON) {
-            type_def_s *udt = find_type_by_name(plc, type_str);
-            if (udt) {
-                /* This is a structure type */
-                tag->tag_type = TAG_CIP_TYPE_STRUCT;  /* 0x00A0 */
-                tag->elem_size = udt->size;
-                tag->type_def = udt;
-            } else {
-                // NOLINTNEXTLINE
-                fprintf(stderr, "Unsupported tag type \"%s\" (not a known simple type or defined structure)!\n", type_str);
-                usage();
-            }
-        } else {
-            // NOLINTNEXTLINE
-            fprintf(stderr, "Unsupported tag type \"%s\" (structure types only supported for Omron PLC)!\n", type_str);
-            usage();
-        }
+        // NOLINTNEXTLINE
+        fprintf(stderr, "Unsupported tag type \"%s\"!", type_str);
+        usage();
     }
 
     /* match the dimensions. */
@@ -1216,7 +744,7 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
     }
 
     /* allocate the tag data array. */
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "allocating %zu elements of %zu bytes each.", tag->elem_count, tag->elem_size);
+    log_info("allocating %zu elements of %zu bytes each.", tag->elem_count, tag->elem_size);
     tag->data = calloc(tag->elem_count, (size_t)tag->elem_size);
     if(!tag->data) {
         // NOLINTNEXTLINE
@@ -1225,346 +753,12 @@ void parse_cip_tag(const char *tag_str, plc_s *plc) {
         exit(1);
     }
 
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Processed \"%s\" into tag %s of type %x with dimensions (%zu, %zu, %zu).", tag_str, tag->name, tag->tag_type,
+    log_info("Processed \"%s\" into tag %s of type %x with dimensions (%zu, %zu, %zu).", tag_str, tag->name, tag->tag_type,
          tag->dimensions[0], tag->dimensions[1], tag->dimensions[2]);
-
-    /* assign instance ID for Omron tag enumeration */
-    plc->next_instance_id++;
-    tag->instance_id = plc->next_instance_id;
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Assigned instance ID %u to tag %s", tag->instance_id, tag->name);
 
     /* add the tag to the list. */
     tag->next_tag = plc->tags;
     plc->tags = tag;
-    plc->tag_count++;
-}
-
-
-/* Parse structure definition from command line (PASS 1)
- * Format: TypeName:[field1:type1,field2:type2,...]
- * Example: MyPoint:[x:INT,y:INT]
- *
- * Pass 1: Parse and store structure definition without resolving nested types
- * Pass 2 (later): Resolve nested type references and calculate sizes
- */
-void parse_struct_definition(const char *struct_str, plc_s *plc) {
-    char type_name[256];
-    char field_list[1024];
-    type_def_s *type = NULL;
-    member_def_s *last_member = NULL;
-    uint16_t member_count = 0;
-
-    /* Parse: TypeName:[...] */
-    if (sscanf(struct_str, "%255[^:]:[%1023[^]]]", type_name, field_list) != 2) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Invalid struct format: %s", struct_str);
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Expected: TypeName:[field1:type1,field2:type2,...]");
-        return;
-    }
-
-    /* Check for duplicate type name */
-    if (find_type_by_name(plc, type_name)) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Structure type '%s' already defined", type_name);
-        return;
-    }
-
-    /* Allocate type definition */
-    type = calloc(1, sizeof(type_def_s));
-    if (!type) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate type_def_s");
-        return;
-    }
-
-    type->name = strdup(type_name);
-    if (!type->name) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate type name");
-        free(type);
-        return;
-    }
-
-    /* CRC will be calculated during finalization (Pass 2) */
-
-    /* Parse field list: field1:type1,field2:type2,... */
-    char *field_str_copy = strdup(field_list);
-    if (!field_str_copy) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate field_str_copy");
-        free(type->name);
-        free(type);
-        return;
-    }
-
-    char *saveptr = NULL;
-    char *token = strtok_r(field_str_copy, ",", &saveptr);
-
-    while (token) {
-        char field_name[256];
-        char field_type_str[256];
-
-        if (sscanf(token, "%255[^:]:%255s", field_name, field_type_str) != 2) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Invalid field format in '%s': %s", type_name, token);
-            goto cleanup;
-        }
-
-        /* Allocate member */
-        member_def_s *member = calloc(1, sizeof(member_def_s));
-        if (!member) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate member_def_s");
-            goto cleanup;
-        }
-
-        member->name = strdup(field_name);
-        if (!member->name) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate member name");
-            free(member);
-            goto cleanup;
-        }
-
-        /* Store type string for later resolution (Pass 2) */
-        member->member_type_string = strdup(field_type_str);
-        if (!member->member_type_string) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate member_type_string");
-            free(member->name);
-            free(member);
-            goto cleanup;
-        }
-
-        /* Add to linked list */
-        if (last_member) {
-            last_member->next_member = member;
-        } else {
-            type->members = member;
-        }
-        last_member = member;
-        member_count++;
-
-        token = strtok_r(NULL, ",", &saveptr);
-    }
-
-    type->member_count = member_count;
-
-    /* Add type to registry (size and offsets will be calculated in Pass 2) */
-    type->next_type = plc->types;
-    plc->types = type;
-    plc->type_count++;
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Parsed structure '%s' with %u members (Pass 1 - type resolution deferred)",
-             type_name, member_count);
-
-    free(field_str_copy);
-    return;
-
-cleanup:
-    /* Free partial structure on error */
-    if (type) {
-        member_def_s *m = type->members;
-        while (m) {
-            member_def_s *next = m->next_member;
-            free(m->name);
-            free(m->member_type_string);
-            free(m);
-            m = next;
-        }
-        free(type->name);
-        free(type);
-    }
-    free(field_str_copy);
-}
-
-
-/* Calculate structure size recursively with circular reference detection (PASS 2)
- * visited_chain: array of type pointers to detect cycles
- * chain_depth: current depth in the type hierarchy
- */
-static size_t calculate_structure_size(type_def_s *type, type_def_s **visited_chain, int chain_depth) {
-    const int MAX_DEPTH = 100;
-
-    /* Check for circular reference */
-    for (int i = 0; i < chain_depth; i++) {
-        if (visited_chain[i] == type) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Circular reference detected: type '%s' contains itself (directly or indirectly)", type->name);
-            return 0;  /* Error indicator */
-        }
-    }
-
-    /* Prevent stack overflow */
-    if (chain_depth >= MAX_DEPTH) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Type nesting too deep (max %d levels)", MAX_DEPTH);
-        return 0;
-    }
-
-    /* Add to visited chain */
-    visited_chain[chain_depth] = type;
-
-    /* Calculate member offsets and structure size */
-    size_t current_offset = 0;
-    size_t max_alignment = 1;
-    member_def_s *member = type->members;
-
-    while (member) {
-        /* Calculate member size and alignment */
-        if (member->nested_type) {
-            /* Nested structure - recursively calculate its size */
-            size_t nested_size = calculate_structure_size(member->nested_type, visited_chain, chain_depth + 1);
-            if (nested_size == 0) {
-                return 0;  /* Error in nested type */
-            }
-            member->member_size = nested_size;
-            member->alignment = get_type_alignment(TAG_CIP_TYPE_STRUCT);  /* Structures align based on largest member */
-
-            /* Recalculate alignment for nested structure */
-            member_def_s *nested_member = member->nested_type->members;
-            size_t nested_max_align = 1;
-            while (nested_member) {
-                if (nested_member->alignment > nested_max_align) {
-                    nested_max_align = nested_member->alignment;
-                }
-                nested_member = nested_member->next_member;
-            }
-            member->alignment = nested_max_align;
-        }
-        /* else: already set by resolve_member_types() */
-
-        /* Align current offset to member alignment */
-        current_offset = align_offset(current_offset, member->alignment);
-        member->offset_in_struct = current_offset;
-        current_offset += member->member_size;
-
-        /* Track maximum alignment */
-        if (member->alignment > max_alignment) {
-            max_alignment = member->alignment;
-        }
-
-        member = member->next_member;
-    }
-
-    /* Calculate total structure size (aligned to max member alignment) */
-    type->size = align_offset(current_offset, max_alignment);
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Calculated size of type '%s': %zu bytes, max alignment: %zu", type->name, type->size, max_alignment);
-
-    return type->size;
-}
-
-
-/* Resolve member type references (PASS 2)
- * After all structures are parsed, resolve type strings to actual type pointers
- * Returns false if any type reference cannot be resolved
- */
-static bool resolve_member_types(plc_s *plc) {
-    type_def_s *type = plc->types;
-    bool errors = false;
-
-    while (type) {
-        member_def_s *member = type->members;
-        while (member) {
-            /* Try to map to simple type first */
-            if (map_type_string_to_cip(member->member_type_string, &member->member_type, &member->member_size)) {
-                /* Simple type - no nested structure */
-                member->nested_type = NULL;
-                member->alignment = get_type_alignment(member->member_type);
-            } else {
-                /* Try to find user-defined structure type */
-                type_def_s *nested = find_type_by_name(plc, member->member_type_string);
-                if (nested) {
-                    /* Nested structure */
-                    member->member_type = TAG_CIP_TYPE_STRUCT;  /* 0x00A0 */
-                    member->nested_type = nested;
-                    /* Size will be calculated in calculate_structure_size() */
-                    /* Alignment will be set based on largest member */
-                } else {
-                    /* Unknown type */
-                    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Type '%s' used in member '%s' of struct '%s' is not defined",
-                             member->member_type_string, member->name, type->name);
-                    errors = true;
-                }
-            }
-
-            member = member->next_member;
-        }
-
-        type = type->next_type;
-    }
-
-    return !errors;
-}
-
-
-/* Finalize structure definitions (PASS 2)
- * Resolve nested type references and calculate structure sizes
- * Must be called after all structure definitions are parsed
- */
-static void finalize_structure_definitions(plc_s *plc) {
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Finalizing structure definitions (Pass 2)...");
-
-    /* Step 1: Resolve all member type references */
-    if (!resolve_member_types(plc)) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to resolve all member type references");
-        return;
-    }
-
-    /* Step 2: Calculate sizes with circular reference detection */
-    type_def_s *type = plc->types;
-    type_def_s **visited_chain = calloc(100, sizeof(type_def_s *));
-    if (!visited_chain) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to allocate visited_chain for circular reference detection");
-        return;
-    }
-
-    while (type) {
-        memset(visited_chain, 0, 100 * sizeof(type_def_s *));
-        size_t size = calculate_structure_size(type, visited_chain, 0);
-        if (size == 0) {
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_ERROR, "Failed to calculate size for type '%s'", type->name);
-        }
-        type = type->next_type;
-    }
-
-    free(visited_chain);
-
-    /* Step 3: Calculate CRC16 for each type */
-    type = plc->types;
-    while (type) {
-        uint16_t crc = calculate_structure_crc(type);
-        type->crc_code = crc;
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Calculated CRC16 for type '%s': 0x%04x", type->name, crc);
-        type = type->next_type;
-    }
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Structure definitions finalized successfully");
-}
-
-
-/* Assign instance IDs to structure types and their members
- * Called after all tags and types are parsed
- */
-void assign_type_instance_ids(plc_s *plc) {
-    /* First, finalize all structure definitions (Pass 2) - Omron only */
-    if (plc->types && plc->plc_type == PLC_OMRON) {
-        finalize_structure_definitions(plc);
-    }
-
-    type_def_s *type = plc->types;
-
-    while (type) {
-        /* Assign instance ID to type */
-        plc->next_instance_id++;
-        type->instance_id = plc->next_instance_id;
-
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Assigned instance ID %u to type '%s'", type->instance_id, type->name);
-
-        /* Assign instance IDs to members */
-        member_def_s *member = type->members;
-        while (member) {
-            plc->next_instance_id++;
-            member->instance_id = plc->next_instance_id;
-
-            pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "  Assigned instance ID %u to member '%s.%s'",
-                     member->instance_id, type->name, member->name);
-
-            member = member->next_member;
-        }
-
-        type = type->next_type;
-    }
 }
 
 
@@ -1573,3 +767,25 @@ void assign_type_instance_ids(plc_s *plc) {
  * request type handler.
  */
 
+slice_s request_handler(slice_s input, slice_s output, void *plc_arg) {
+    // Remember that we get a copy of the plc_arg/context contents. So values are frozen
+    // in time, but references are to a shared resource and must be mutex'ed.
+    plc_s *plc = (plc_s *)plc_arg;
+
+    /* check to see if we have a full packet. */
+    if(slice_len(input) >= EIP_HEADER_SIZE) {
+        uint16_t eip_len = slice_get_uint16_le(input, 2);
+
+        if(slice_len(input) >= (size_t)(EIP_HEADER_SIZE + eip_len)) {
+            slice_s resp = eip_dispatch_request(input, output, plc);
+
+            /* if there is a response delay requested, then wait a bit. */
+            if(plc->response_delay > 0) { util_sleep_ms(plc->response_delay); }
+
+            return resp;
+        }
+    }
+
+    /* we do not have a complete packet, get more data. */
+    return slice_make_err(TCP_SERVER_INCOMPLETE);
+}

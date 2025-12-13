@@ -36,7 +36,7 @@
 #include <stdint.h>
 #include "compat.h"
 #include "slice.h"
-#include "../../utils/log.h"
+#include "log.h"
 
 extern int util_sleep_ms(int ms);
 extern int64_t util_time_ms(void);
@@ -58,13 +58,17 @@ extern void slice_dump(slice_s s);
 
 /* new logging API slice functions */
 extern void log_slice_impl_func(const char *func, int line, log_level_t lvl, slice_s s);
-extern slice_s make_cip_pdlog(log_module_t module, log_level_t level, slice_s output, uint8_t cip_service, uint16_t error_code, bool is_extended, uint16_t extended_code);
 
-#define log_error_slice(s)  log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_ERROR, (s))
-#define log_warn_slice(s)   log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_WARN, (s))
-#define log_info_slice(s)   log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_INFO, (s))
-#define log_detail_slice(s) log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_DETAIL, (s))
-#define log_spew_slice(s)   log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_SPEW, (s))
+#define log_error_slice(s)  do { if((LOG_LEVEL_ERROR) <= log_get_level()) \
+                                  log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_ERROR, (s)); } while(0)
+#define log_warn_slice(s)   do { if((LOG_LEVEL_WARN) <= log_get_level()) \
+                                  log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_WARN, (s)); } while(0)
+#define log_info_slice(s)   do { if((LOG_LEVEL_INFO) <= log_get_level()) \
+                                  log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_INFO, (s)); } while(0)
+#define log_detail_slice(s) do { if((LOG_LEVEL_DETAIL) <= log_get_level()) \
+                                  log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_DETAIL, (s)); } while(0)
+#define log_spew_slice(s)   do { if((LOG_LEVEL_SPEW) <= log_get_level()) \
+                                  log_slice_impl_func(__func__, __LINE__, LOG_LEVEL_SPEW, (s)); } while(0)
 
 #define RANDOM_U64_ERROR (UINT64_MAX)
 extern uint64_t random_u64(uint64_t upper_bound);

@@ -33,7 +33,20 @@
 
 #pragma once
 
-#include "plc.h"
+#include <signal.h>
+#include <stdbool.h>
 #include "slice.h"
 
-extern slice_s dispatch_pccc_request(slice_s input, slice_s output, plc_s *context);
+typedef enum {
+    TCP_SERVER_INCOMPLETE = 100001,
+    TCP_SERVER_PROCESSED = 100002,
+    TCP_SERVER_DONE = 100003,
+    TCP_SERVER_BAD_REQUEST = 100004,
+    TCP_SERVER_UNSUPPORTED = 100005
+} tcp_server_status_t;
+
+typedef struct tcp_server *tcp_server_p;
+
+extern tcp_server_p tcp_server_create(const char *host, const char *port, slice_s (*handler)(slice_s input, slice_s output, void *context), void *context, size_t context_size);
+extern void tcp_server_start(tcp_server_p server, volatile sig_atomic_t *terminate);
+extern void tcp_server_destroy(tcp_server_p server);
