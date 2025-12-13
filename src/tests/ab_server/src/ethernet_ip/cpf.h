@@ -34,7 +34,8 @@
 #pragma once
 
 #include "../plc.h"
-#include "../slice.h"
+#include "../../../utils/buf.h"
+#include "../../../utils/err.h"
 
-extern slice_s handle_cpf_unconnected(slice_s input, slice_s output, plc_s *plc);
-extern slice_s handle_cpf_connected(slice_s input, slice_s output, plc_s *plc);
+extern util_err_t handle_cpf_unconnected(buf_t *input, buf_t *output, plc_s *plc);
+extern util_err_t handle_cpf_connected(buf_t *input, buf_t *output, plc_s *plc);

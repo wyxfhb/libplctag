@@ -34,7 +34,8 @@
 #pragma once
 
 #include "../plc.h"
-#include "../slice.h"
+#include "../../../utils/buf.h"
+#include "../../../utils/err.h"
 
 /* EIP header size is 24 bytes. */
 #define EIP_HEADER_SIZE (24)
@@ -43,4 +44,4 @@
 #define EIP_ERR_BAD_REQUEST     ((uint32_t)1) /* FIXME */
 
 
-extern slice_s eip_dispatch_request(slice_s input, slice_s output, plc_s *context);
+extern util_err_t eip_dispatch_request(buf_t *input, buf_t *output, plc_s *context);

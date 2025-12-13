@@ -34,7 +34,7 @@
 #include "eip.h"
 #include "cpf.h"
 #include "../../../utils/err.h"
-#include "../slice.h"
+#include "../../../utils/buf.h"
 #include "../utils.h"
 #include "../../../utils/log.h"
 #include <stdlib.h>
@@ -60,167 +60,180 @@ typedef struct {
 } eip_header_s;
 
 
-static slice_s register_session(slice_s input, slice_s output, plc_s *plc, eip_header_s *header);
-static slice_s unregister_session(slice_s input, slice_s output, plc_s *plc, eip_header_s *header);
+static util_err_t register_session(buf_t *input, buf_t *output, plc_s *plc, eip_header_s *header);
+static util_err_t unregister_session(buf_t *input, buf_t *output, plc_s *plc, eip_header_s *header);
 
 
-slice_s eip_dispatch_request(slice_s input, slice_s raw_output, plc_s *plc) {
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "eip_dispatch_request(): raw_output size = %zu, server_to_client_max_packet = %zu", slice_len(raw_output), plc->server_to_client_max_packet);
-
-    slice_s output = slice_from_slice(raw_output, 0, plc->server_to_client_max_packet);
-
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "eip_dispatch_request(): output size = %zu", slice_len(output));
-
-    slice_s response = slice_from_slice(output, EIP_HEADER_SIZE, slice_len(output) - EIP_HEADER_SIZE);
-
+util_err_t eip_dispatch_request(buf_t *input, buf_t *output, plc_s *plc) {
     eip_header_s header;
+    util_err_t handler_err;
+    size_t total_input_size = buf_read_size(input);
 
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "eip_dispatch_request(): got packet:");
-    log_info_slice(input);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "eip_dispatch_request(): input size = %zu", total_input_size);
 
-    /* unpack header. */
-    header.command = slice_get_uint16_le(input, 0);
-    header.length = slice_get_uint16_le(input, 2);
-    header.session_handle = slice_get_uint32_le(input, 4);
-    header.status = slice_get_uint32_le(input, 8);
-    header.sender_context = slice_get_uint64_le(input, 12);
-    header.options = slice_get_uint32_le(input, 20);
+    /* Read EIP header */
+    bool ok = true;
+    ok &= buf_read_u16_le(input, "command", &header.command);
+    ok &= buf_read_u16_le(input, "length", &header.length);
+    ok &= buf_read_u32_le(input, "session_handle", &header.session_handle);
+    ok &= buf_read_u32_le(input, "status", &header.status);
+    ok &= buf_read_u64_le(input, "sender_context", &header.sender_context);
+    uint32_t reserved;
+    ok &= buf_read_u32_le(input, "reserved", &reserved);  /* skip 4 bytes */
+    ok &= buf_read_u32_le(input, "options", &header.options);
 
-    /* sanity checks */
-    if(slice_len(input) != (size_t)(header.length + EIP_HEADER_SIZE)) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Illegal EIP packet.   Length should be %d but is %d!", header.length + EIP_HEADER_SIZE, slice_len(input));
-        return slice_make_err(UTIL_EINVAL);
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to parse EIP header: %s", util_err_str(buf_get_error(input)));
+        return buf_get_error(input);
     }
 
-    /* dispatch the request */
+    /* Sanity check: total packet size should be header + payload length */
+    if(total_input_size != (size_t)(EIP_HEADER_SIZE + header.length)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Illegal EIP packet. Length should be %d but is %zu!", EIP_HEADER_SIZE + header.length, total_input_size);
+        return UTIL_EINVAL;
+    }
+
+    /* Store sender context for later */
+    plc->sender_context = header.sender_context;
+
+    /* Reset output buffer and prepare for response */
+    buf_reset(output);
+
+    /* Dispatch based on command */
     switch(header.command) {
         case EIP_REGISTER_SESSION:
-            response =
-                register_session(slice_from_slice(input, EIP_HEADER_SIZE, EIP_REGISTER_SESSION_SIZE), response, plc, &header);
+            handler_err = register_session(input, output, plc, &header);
             break;
 
         case EIP_UNREGISTER_SESSION:
-            response =
-                unregister_session(slice_from_slice(input, EIP_HEADER_SIZE, EIP_REGISTER_SESSION_SIZE), response, plc, &header);
+            handler_err = unregister_session(input, output, plc, &header);
             break;
 
         case EIP_UNCONNECTED_SEND:
-            response =
-                handle_cpf_unconnected(slice_from_slice(input, EIP_HEADER_SIZE, slice_len(input) - EIP_HEADER_SIZE),
-                                       slice_from_slice(output, EIP_HEADER_SIZE, slice_len(output) - EIP_HEADER_SIZE), plc);
+            handler_err = handle_cpf_unconnected(input, output, plc);
             break;
 
         case EIP_CONNECTED_SEND:
-            response = handle_cpf_connected(slice_from_slice(input, EIP_HEADER_SIZE, slice_len(input) - EIP_HEADER_SIZE),
-                                            slice_from_slice(output, EIP_HEADER_SIZE, slice_len(output) - EIP_HEADER_SIZE), plc);
+            handler_err = handle_cpf_connected(input, output, plc);
             break;
 
-        default: response = slice_make_err(UTIL_ENOTSUPPORTED); break;
+        default:
+            handler_err = UTIL_ENOTSUPPORTED;
+            break;
     }
 
-    if(!slice_has_err(response)) {
-        /* build response */
-        slice_set_uint16_le(output, 0, header.command);
-        slice_set_uint16_le(output, 2, (uint16_t)slice_len(response));
-        slice_set_uint32_le(output, 4, plc->session_handle);
-        slice_set_uint32_le(output, 8, (uint32_t)0); /* status == 0 -> no error */
-        slice_set_uin64_le(output, 12, plc->sender_context);
-        slice_set_uint32_le(output, 20, header.options);
+    /* Build response header */
+    buf_reset(output);
+    ok = true;
+    ok &= buf_write_u16_le(output, "response_command", header.command);
+    ok &= buf_write_u16_le(output, "response_length", (uint16_t)(buf_write_pos(output) - 4));  /* Will update later */
+    ok &= buf_write_u32_le(output, "response_session", plc->session_handle);
 
-        /* The payload is already in place. */
-        return slice_from_slice(output, 0, EIP_HEADER_SIZE + slice_len(response));
-    } else if(slice_get_err(response) == UTIL_ECLOSED) {
-        /* just pass this through, normally not an error. */
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Done with connection.");
-
-        return response;
+    if (handler_err == UTIL_OK) {
+        ok &= buf_write_u32_le(output, "response_status", 0);  /* Success */
+    } else if (handler_err == UTIL_ECLOSED) {
+        /* Special case: connection closed is not a true error */
+        return UTIL_ECLOSED;
     } else {
-        /* error condition. */
-        slice_set_uint16_le(output, 0, header.command);
-        slice_set_uint16_le(output, 2, (uint16_t)0); /* no payload. */
-        slice_set_uint32_le(output, 4, plc->session_handle);
-        slice_set_uint32_le(output, 8, (uint32_t)(int32_t)slice_get_err(response)); /* status */
-        slice_set_uin64_le(output, 12, plc->sender_context);
-        slice_set_uint32_le(output, 20, header.options);
-
-        return slice_from_slice(output, 0, EIP_HEADER_SIZE);
+        ok &= buf_write_u32_le(output, "response_status", (uint32_t)handler_err);
     }
+
+    ok &= buf_write_u64_le(output, "response_context", plc->sender_context);
+    ok &= buf_write_u32_le(output, "response_reserved", 0);
+    ok &= buf_write_u32_le(output, "response_options", header.options);
+
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to write EIP response header: %s", util_err_str(buf_get_error(output)));
+        return buf_get_error(output);
+    }
+
+    /* Update the length field in header with actual payload size */
+    size_t response_payload_size = buf_write_pos(output) - EIP_HEADER_SIZE;
+    uint8_t *response_data = (uint8_t *)buf_read_ptr(output) - buf_read_size(output);
+    response_data[2] = (uint8_t)(response_payload_size & 0xFF);
+    response_data[3] = (uint8_t)((response_payload_size >> 8) & 0xFF);
+
+    return handler_err == UTIL_OK ? UTIL_OK : UTIL_OK;  /* Return OK - handlers write error status in EIP header */
 }
 
 
-slice_s register_session(slice_s input, slice_s output, plc_s *plc, eip_header_s *header) {
+static util_err_t register_session(buf_t *input, buf_t *output, plc_s *plc, eip_header_s *header) {
     struct {
         uint16_t eip_version;
         uint16_t option_flags;
     } register_request;
 
-    register_request.eip_version = slice_get_uint16_le(input, 0);
-    register_request.option_flags = slice_get_uint16_le(input, 2);
+    bool ok = true;
+    ok &= buf_read_u16_le(input, "eip_version", &register_request.eip_version);
+    ok &= buf_read_u16_le(input, "option_flags", &register_request.option_flags);
+
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to parse register session request: %s", util_err_str(buf_get_error(input)));
+        return buf_get_error(input);
+    }
 
     /* sanity checks.  The command and packet length are checked by now. */
 
     /* session_handle must be zero. */
     if(header->session_handle != (uint32_t)0) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request session handle is %u but should be zero.", header->session_handle);
-
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     /* session status must be zero. */
     if(header->status != (uint32_t)0) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request status is %u but should be zero.", header->status);
-
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     /* session sender plc must be zero. */
     if(header->sender_context != (uint64_t)0) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request sender context should be zero.");
-
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     /* session options must be zero. */
     if(header->options != (uint32_t)0) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request options is %u but should be zero.", header->options);
-
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     /* EIP version must be 1. */
     if(register_request.eip_version != EIP_VERSION) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request EIP version is %u but should be %u.", register_request.eip_version,
-             EIP_VERSION);
-
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request EIP version is %u but should be %u.", register_request.eip_version, EIP_VERSION);
+        return UTIL_EINVAL;
     }
 
     /* Session request option flags must be zero. */
     if(register_request.option_flags != (uint16_t)0) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Request failed sanity check: request option flags field is %u but should be zero.", register_request.option_flags);
-
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     /* all good, generate a session handle. */
     plc->session_handle = header->session_handle = (uint32_t)(random_u64(UINT32_MAX) + 1);
 
     /* build the response. */
-    slice_set_uint16_le(output, 0, register_request.eip_version);
-    slice_set_uint16_le(output, 2, register_request.option_flags);
+    ok = true;
+    ok &= buf_write_u16_le(output, "response_version", register_request.eip_version);
+    ok &= buf_write_u16_le(output, "response_flags", register_request.option_flags);
 
-    return slice_from_slice(output, 0, EIP_REGISTER_SESSION_SIZE);
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to write register session response: %s", util_err_str(buf_get_error(output)));
+        return buf_get_error(output);
+    }
+
+    return UTIL_OK;
 }
 
 
-slice_s unregister_session(slice_s input, slice_s output, plc_s *plc, eip_header_s *header) {
+static util_err_t unregister_session(buf_t *input, buf_t *output, plc_s *plc, eip_header_s *header) {
     (void)input;
     (void)output;
-    (void)header;
 
     if(header->session_handle == plc->session_handle) {
-        return slice_make_err(UTIL_ECLOSED);
+        return UTIL_ECLOSED;
     } else {
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 }

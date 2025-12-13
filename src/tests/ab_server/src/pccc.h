@@ -34,6 +34,7 @@
 #pragma once
 
 #include "plc.h"
-#include "slice.h"
+#include "../../utils/buf.h"
+#include "../../utils/err.h"
 
-extern slice_s dispatch_pccc_request(slice_s input, slice_s output, plc_s *context);
+extern util_err_t dispatch_pccc_request(buf_t *input, buf_t *output, plc_s *context);

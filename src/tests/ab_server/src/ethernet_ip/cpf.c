@@ -34,8 +34,8 @@
 #include "cpf.h"
 #include "cip.h"
 #include "eip.h"
-#include "../utils.h"
 #include "../../../utils/log.h"
+#include "../../../utils/buf.h"
 #include <stdint.h>
 
 #define CPF_ITEM_NAI ((uint16_t)0x0000) /* NULL Address Item */
@@ -71,166 +71,191 @@ typedef struct {
 #define CPF_CONN_HEADER_SIZE (22)
 
 
-slice_s handle_cpf_unconnected(slice_s input, slice_s output, plc_s *plc) {
-    slice_s result;
+util_err_t handle_cpf_unconnected(buf_t *input, buf_t *output, plc_s *plc) {
     cpf_uc_header_s header;
 
-    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "handle_cpf_unconnected(): got packet:");
-    log_info_slice(input);
+    pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "handle_cpf_unconnected(): got packet");
 
     /* we must have some sort of payload. */
-    if(slice_len(input) <= CPF_UCONN_HEADER_SIZE) {
+    if(buf_read_size(input) <= CPF_UCONN_HEADER_SIZE) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unusable size of unconnected CPF packet!");
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     /* unpack the request. */
-    header.interface_handle = slice_get_uint32_le(input, 0);
-    header.router_timeout = slice_get_uint16_le(input, 4);
-    header.item_count = slice_get_uint16_le(input, 6);
+    bool ok = true;
+    ok &= buf_read_u32_le(input, "interface_handle", &header.interface_handle);
+    ok &= buf_read_u16_le(input, "router_timeout", &header.router_timeout);
+    ok &= buf_read_u16_le(input, "item_count", &header.item_count);
+    ok &= buf_read_u16_le(input, "item_addr_type", &header.item_addr_type);
+    ok &= buf_read_u16_le(input, "item_addr_length", &header.item_addr_length);
+    ok &= buf_read_u16_le(input, "item_data_type", &header.item_data_type);
+    ok &= buf_read_u16_le(input, "item_data_length", &header.item_data_length);
+
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to parse CPF header: %s", util_err_str(buf_get_error(input)));
+        return buf_get_error(input);
+    }
 
     /* sanity check the number of items. */
     if(header.item_count != (uint16_t)2) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unsupported unconnected CPF packet, expected two items but found %u!", header.item_count);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
-
-    header.item_addr_type = slice_get_uint16_le(input, 8);
-    header.item_addr_length = slice_get_uint16_le(input, 10);
-    header.item_data_type = slice_get_uint16_le(input, 12);
-    header.item_data_length = slice_get_uint16_le(input, 14);
 
     /* sanity check the data. */
     if(header.item_addr_type != CPF_ITEM_NAI) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected null address item but found %x!", header.item_addr_type);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     if(header.item_addr_length != 0) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected zero address item length but found %d bytes!", header.item_addr_length);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
     if(header.item_data_type != CPF_ITEM_UDI) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected unconnected data item but found %x!", header.item_data_type);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_EINVAL;
     }
 
-    if(header.item_data_length != (slice_len(input) - CPF_UCONN_HEADER_SIZE)) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CPF unconnected payload length, %d, does not match passed length, %d!",
-             (slice_len(input) - CPF_UCONN_HEADER_SIZE - 2), header.item_data_length);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+    if(header.item_data_length != buf_read_size(input)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CPF unconnected payload length mismatch!");
+        return UTIL_EINVAL;
     }
 
-    /* dispatch and handle the result. */
-    result = cip_dispatch_request(
-        slice_from_slice(input, (size_t)CPF_UCONN_HEADER_SIZE, (size_t)((uint16_t)slice_len(input) - CPF_UCONN_HEADER_SIZE)),
-        slice_from_slice(output, (size_t)CPF_UCONN_HEADER_SIZE, (size_t)((uint16_t)slice_len(output) - CPF_UCONN_HEADER_SIZE)),
-        plc);
+    /* Write CPF response header to output buffer, leaving room for CIP response */
+    buf_reset(output);
+    ok = true;
+    ok &= buf_write_u32_le(output, "interface_handle", header.interface_handle);
+    ok &= buf_write_u16_le(output, "router_timeout", header.router_timeout);
+    ok &= buf_write_u16_le(output, "item_count", 2);  /* two items */
+    ok &= buf_write_u16_le(output, "item_addr_type", CPF_ITEM_NAI);
+    ok &= buf_write_u16_le(output, "item_addr_length", 0);
+    ok &= buf_write_u16_le(output, "item_data_type", CPF_ITEM_UDI);
+    ok &= buf_write_u16_le(output, "item_data_length_placeholder", 0);  /* Will update later */
 
-    if(!slice_has_err(result)) {
-        /* build outbound header. */
-        slice_set_uint32_le(output, 0, header.interface_handle);
-        slice_set_uint16_le(output, 4, header.router_timeout);
-        slice_set_uint16_le(output, 6, 2);                            /* two items. */
-        slice_set_uint16_le(output, 8, CPF_ITEM_NAI);                 /* connected address type. */
-        slice_set_uint16_le(output, 10, 0);                           /* No connection ID. */
-        slice_set_uint16_le(output, 12, CPF_ITEM_UDI);                /* connected data type */
-        slice_set_uint16_le(output, 14, (uint16_t)slice_len(result)); /* result from CIP processing downstream. */
-
-        /* create a new slice with the CPF header and the response packet in it. */
-        result = slice_from_slice(output, (size_t)0, (size_t)(slice_len(result) + (ssize_t)CPF_UCONN_HEADER_SIZE));
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to write CPF response header: %s", util_err_str(buf_get_error(output)));
+        return buf_get_error(output);
     }
 
-    /* errors are pass through. */
+    /* Save position of item_data_length field for later update */
+    size_t data_length_offset = buf_write_pos(output) - 2;
 
-    return result;
+    /* dispatch to CIP - it will write the response starting at current position */
+    util_err_t cip_err = cip_dispatch_request(input, output, plc);
+
+    if(cip_err != UTIL_OK) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP dispatch failed: %s", util_err_str(cip_err));
+        return cip_err;
+    }
+
+    /* Update the item_data_length field with actual response size */
+    size_t response_len = buf_write_pos(output) - CPF_UCONN_HEADER_SIZE;
+    uint8_t *output_data = buf_write_ptr(output) - buf_write_pos(output);
+    output_data[data_length_offset] = (uint8_t)(response_len & 0xFF);
+    output_data[data_length_offset + 1] = (uint8_t)((response_len >> 8) & 0xFF);
+
+    return UTIL_OK;
 }
 
 
-slice_s handle_cpf_connected(slice_s input, slice_s output, plc_s *plc) {
-    slice_s result;
+util_err_t handle_cpf_connected(buf_t *input, buf_t *output, plc_s *plc) {
     cpf_co_header_s header;
 
     /* we must have some sort of payload. */
-    if(slice_len(input) <= CPF_UCONN_HEADER_SIZE) {
+    if(buf_read_size(input) <= CPF_CONN_HEADER_SIZE) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unusable size of connected CPF packet!");
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_ERR_INVALID_DATA;
     }
 
     /* unpack the request. */
-    header.interface_handle = slice_get_uint32_le(input, 0);
-    header.router_timeout = slice_get_uint16_le(input, 4);
-    header.item_count = slice_get_uint16_le(input, 6);
+    bool ok = true;
+    ok &= buf_read_u32_le(input, "interface_handle", &header.interface_handle);
+    ok &= buf_read_u16_le(input, "router_timeout", &header.router_timeout);
+    ok &= buf_read_u16_le(input, "item_count", &header.item_count);
+    ok &= buf_read_u16_le(input, "item_addr_type", &header.item_addr_type);
+    ok &= buf_read_u16_le(input, "item_addr_length", &header.item_addr_length);
+    ok &= buf_read_u32_le(input, "conn_id", &header.conn_id);
+    ok &= buf_read_u16_le(input, "item_data_type", &header.item_data_type);
+    ok &= buf_read_u16_le(input, "item_data_length", &header.item_data_length);
+    ok &= buf_read_u16_le(input, "conn_seq", &header.conn_seq);
+
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to parse CPF connected header: %s", util_err_str(buf_get_error(input)));
+        return buf_get_error(input);
+    }
 
     /* sanity check the number of items. */
     if(header.item_count != (uint16_t)2) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Unsupported connected CPF packet, expected two items but found %u!", header.item_count);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_ERR_INVALID_DATA;
     }
-
-    header.item_addr_type = slice_get_uint16_le(input, 8);
-    header.item_addr_length = slice_get_uint16_le(input, 10);
-    header.conn_id = slice_get_uint32_le(input, 12);
-    header.item_data_type = slice_get_uint16_le(input, 16);
-    header.item_data_length = slice_get_uint16_le(input, 18);
-    header.conn_seq = slice_get_uint16_le(input, 20);
 
     /* sanity check the data. */
     if(header.item_addr_type != CPF_ITEM_CAI) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected connected address item but found %x!", header.item_addr_type);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_ERR_INVALID_DATA;
     }
 
     if(header.item_addr_length != 4) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected address item length of 4 but found %d bytes!", header.item_addr_length);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_ERR_INVALID_DATA;
     }
 
     if(header.conn_id != plc->server_connection_id) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected connection ID %x but found connection ID %x!", plc->server_connection_id, header.conn_id);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_ERR_INVALID_DATA;
     }
 
     if(header.item_data_type != CPF_ITEM_CDI) {
         pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Expected connected data item but found %x!", header.item_data_type);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+        return UTIL_ERR_INVALID_DATA;
     }
 
-    if(header.item_data_length != (slice_len(input) - (CPF_CONN_HEADER_SIZE - 2))) {
-        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CPF payload length, %d, does not match passed length, %d!", (slice_len(input) - (CPF_CONN_HEADER_SIZE - 2)),
-             header.item_data_length);
-        return slice_make_err(EIP_ERR_BAD_REQUEST);
+    if(header.item_data_length != buf_read_size(input)) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CPF connected payload length mismatch!");
+        return UTIL_ERR_INVALID_DATA;
     }
 
-    /* do we care about the sequence ID?   Should check. */
+    /* do we care about the sequence ID? Should check. */
     plc->client_connection_seq = header.conn_seq;
 
-    /* dispatch and handle the result. */
-    result = cip_dispatch_request(
-        slice_from_slice(input, (size_t)CPF_CONN_HEADER_SIZE, (size_t)((uint16_t)slice_len(input) - CPF_CONN_HEADER_SIZE)),
-        slice_from_slice(output, (size_t)CPF_CONN_HEADER_SIZE, (size_t)((uint16_t)slice_len(output) - CPF_CONN_HEADER_SIZE)),
-        plc);
+    /* Write CPF response header to output buffer, leaving room for CIP response */
+    buf_reset(output);
+    ok = true;
+    ok &= buf_write_u32_le(output, "interface_handle", header.interface_handle);
+    ok &= buf_write_u16_le(output, "router_timeout", header.router_timeout);
+    ok &= buf_write_u16_le(output, "item_count", 2);  /* two items */
+    ok &= buf_write_u16_le(output, "item_addr_type", CPF_ITEM_CAI);
+    ok &= buf_write_u16_le(output, "item_addr_length", 4);  /* connection ID is 4 bytes */
+    ok &= buf_write_u32_le(output, "client_connection_id", plc->client_connection_id);
+    ok &= buf_write_u16_le(output, "item_data_type", CPF_ITEM_CDI);
+    ok &= buf_write_u16_le(output, "item_data_length_placeholder", 0);  /* Will update later */
+    ok &= buf_write_u16_le(output, "conn_seq", header.conn_seq);
 
-    if(!slice_has_err(result)) {
-        /* build outbound header. */
-        size_t offset = 0;
-        slice_set_uint32_le(output, offset, header.interface_handle); offset += 4;
-        slice_set_uint16_le(output, offset, header.router_timeout); offset += 2;
-        slice_set_uint16_le(output, offset, 2); offset += 2;           /* two items. */
-        slice_set_uint16_le(output, offset, CPF_ITEM_CAI); offset += 2; /* connected address type. */
-        slice_set_uint16_le(output, offset, 4); offset += 2;           /* connection ID is 4 bytes. */
-        slice_set_uint32_le(output, offset, plc->client_connection_id); offset += 4;
-        slice_set_uint16_le(output, offset, CPF_ITEM_CDI); offset += 2; /* connected data type */
-        slice_set_uint16_le(output, offset,
-            (uint16_t)(slice_len(result) + 2)); offset += 2; /* result from CIP processing downstream.  Plus 2 bytes for sequence number. */
-        slice_set_uint16_le(output, offset, header.conn_seq); offset += 2;
-
-        /* create a new slice with the CPF header and the response packet in it. */
-        result = slice_from_slice(output, (size_t)0, (size_t)(slice_len(result) + offset));
+    if (!ok) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "Failed to write CPF connected response header: %s", util_err_str(buf_get_error(output)));
+        return buf_get_error(output);
     }
 
-    /* errors are pass through. */
+    /* Save position of item_data_length field for later update */
+    size_t data_length_offset = buf_write_pos(output) - 4;  /* 2 bytes for length + 2 bytes for seq */
 
-    return result;
+    /* dispatch to CIP - it will write the response starting at current position */
+    util_err_t cip_err = cip_dispatch_request(input, output, plc);
+
+    if(cip_err != UTIL_OK) {
+        pdlog(LOG_MODULE_AB_SERVER, LOG_LEVEL_INFO, "CIP dispatch failed: %s", util_err_str(cip_err));
+        return cip_err;
+    }
+
+    /* Update the item_data_length field with actual response size (plus 2 bytes for sequence number) */
+    size_t response_len = buf_write_pos(output) - CPF_CONN_HEADER_SIZE + 2;
+    uint8_t *output_data = (uint8_t *)buf_read_ptr(output) - buf_read_size(output);
+    output_data[data_length_offset] = (uint8_t)(response_len & 0xFF);
+    output_data[data_length_offset + 1] = (uint8_t)((response_len >> 8) & 0xFF);
+
+    return UTIL_OK;
 }
