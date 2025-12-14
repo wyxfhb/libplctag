@@ -50,7 +50,7 @@ util_err_t eip_frame_check(buf_t *buf, void *context) {
     if(available < EIP_HEADER_SIZE) { return UTIL_EAGAIN; }
 
     /* Peek at header to get data length (non-destructive) */
-    buf_t peek = *buf;
+    buf_t peek = buf_checkpoint(buf);
     uint16_t cmd, length;
 
     if(!buf_read_u16_le(&peek, "command", &cmd)) { return buf_get_error(&peek); }
@@ -282,7 +282,7 @@ static util_err_t handle_send_data(buf_t *input, buf_t *output, const eip_header
     }
 
     /* Build EIP response header */
-    uint16_t data_length = 6 + buf_write_pos(&cpf_response);
+    uint16_t data_length = (uint16_t)((size_t)6 + buf_write_pos(&cpf_response));
     eip_build_response_header(output, req_header, 0, data_length);
 
     /* Write response data */
@@ -319,17 +319,29 @@ util_err_t eip_dispatch(buf_t *input, buf_t *output, eip_session_t *session, plc
 
     /* Dispatch by command */
     switch(req_header.command) {
-        case EIP_CMD_REGISTER_SESSION: err = handle_register_session(input, output, session, &req_header, plc); break;
+        case EIP_CMD_REGISTER_SESSION:
+            pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "EIP dispatch: Register Session");
+            err = handle_register_session(input, output, session, &req_header, plc);
+            break;
 
-        case EIP_CMD_UNREGISTER_SESSION: err = handle_unregister_session(input, output, session, &req_header, plc); break;
+        case EIP_CMD_UNREGISTER_SESSION:
+            pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "EIP dispatch: Unregister Session");
+            err = handle_unregister_session(input, output, session, &req_header, plc);
+            break;
 
-        case EIP_CMD_LIST_SERVICES: err = handle_list_services(input, output, &req_header, plc); break;
+        case EIP_CMD_LIST_SERVICES:
+            pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "EIP dispatch: List Services");
+            err = handle_list_services(input, output, &req_header, plc);
+            break;
 
         case EIP_CMD_SEND_RR_DATA:
-        case EIP_CMD_SEND_UNIT_DATA: err = handle_send_data(input, output, &req_header, plc); break;
+        case EIP_CMD_SEND_UNIT_DATA:
+            pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "EIP dispatch: Send Data");
+            err = handle_send_data(input, output, &req_header, plc);
+            break;
 
         default:
-            pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_WARN, "Unknown EIP command: 0x%04X", req_header.command);
+            pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_WARN, "Unsupported EIP command: 0x%04X", req_header.command);
             eip_build_response_header(output, &req_header, 0x0001, 0);
             err = UTIL_ENOTSUPPORTED;
             break;

@@ -33,6 +33,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "cip_path.h"
 #include "cip_object_registry.h"
 #include "cip_message_router.h"
 #include "../../utils/log.h"
@@ -100,7 +101,13 @@ util_err_t cip_registry_dispatch(cip_object_registry_t *registry, uint16_t class
 
     /* Get instance */
     cip_object_instance_t *instance = NULL;
-    if(obj_class->get_instance) {
+
+    /* Special case: instance 0 with symbolic segment means handler will do tag name lookup */
+    if(instance_id == 0 && path && path->segment_count > 0 && path->segments[0].type == CIP_SEGMENT_SYMBOLIC) {
+        /* Pass NULL instance - handler will extract tag name from path and find the actual variable */
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Registry dispatch: symbol lookup - handler will resolve tag '%.*s'",
+              (int)path->segments[0].symbolic.length, path->segments[0].symbolic.name);
+    } else if(obj_class->get_instance) {
         instance = obj_class->get_instance(instance_id, plc);
         if(!instance) {
             pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "Registry dispatch: instance %u of class 0x%02X not found", instance_id,

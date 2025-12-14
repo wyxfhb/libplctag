@@ -71,6 +71,7 @@ set(BUILD_TESTS 1 CACHE BOOL "Build test executables or not")
 set(BUILD_32_BIT 0 CACHE BOOL "Linux 32-bit build selector")
 set(USE_SANITIZERS 1 CACHE BOOL "Build with debug sanitizers or not")
 set(BUILD_ALPINE_MUSL 0 CACHE BOOL "Build for Alpine Linux with musl C library")
+set(BUILD_WRAPPERS 1 CACHE BOOL "Build language wrappers (Java, C#, Python) with SWIG")
 
 # message("CMAKE_GENERATOR = ${CMAKE_GENERATOR}")
 
@@ -122,6 +123,13 @@ if(BUILD_TESTS)
    enable_testing()
    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/src/tests")
 endif(BUILD_TESTS)
+
+if(BUILD_WRAPPERS)
+    message(STATUS "Building language wrappers (Java, C#, Python) with SWIG...")
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/src/wrappers")
+else()
+    message(STATUS "Language wrapper generation disabled (set BUILD_WRAPPERS=ON to enable)")
+endif(BUILD_WRAPPERS)
 
 
 

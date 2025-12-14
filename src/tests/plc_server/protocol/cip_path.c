@@ -47,6 +47,7 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words, cip_path_t *pat
     size_t end_pos = start_pos + path_bytes;
 
     pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP path: parsing %u words (%zu bytes)", path_size_words, path_bytes);
+    pdlog_bytes(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, input);
 
     /* Parse segments until we reach end */
     while(buf_read_pos(input) < end_pos && path->segment_count < 16) {
@@ -56,6 +57,9 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words, cip_path_t *pat
             pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP path: failed to read segment format");
             return buf_get_error(input);
         }
+
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP path: segment_format=0x%02X at pos %zu/%zu",
+              segment_format, buf_read_pos(input) - 1, end_pos);
 
         cip_segment_t *seg = &path->segments[path->segment_count];
         seg->type = segment_format;
@@ -119,6 +123,37 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words, cip_path_t *pat
 
                 /* Pad to even boundary */
                 if(name_length & 1) { buf_read_advance(input, 1); }
+                break;
+            }
+
+            /* Numeric: 8-bit */
+            case CIP_SEGMENT_NUMERIC_8BIT: {
+                uint8_t value;
+                if(!buf_read_u8(input, "numeric_value", &value)) { return buf_get_error(input); }
+                seg->logical.id = value;
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: numeric 8-bit 0x%02X", path->segment_count, value);
+                break;
+            }
+
+            /* Numeric: 16-bit */
+            case CIP_SEGMENT_NUMERIC_16BIT: {
+                uint8_t padding;
+                if(!buf_read_u8(input, "padding", &padding)) { return buf_get_error(input); }
+                uint16_t value;
+                if(!buf_read_u16_le(input, "numeric_value", &value)) { return buf_get_error(input); }
+                seg->logical.id = value;
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: numeric 16-bit 0x%04X", path->segment_count, value);
+                break;
+            }
+
+            /* Numeric: 32-bit */
+            case CIP_SEGMENT_NUMERIC_32BIT: {
+                uint8_t padding;
+                if(!buf_read_u8(input, "padding", &padding)) { return buf_get_error(input); }
+                uint32_t value;
+                if(!buf_read_u32_le(input, "numeric_value", &value)) { return buf_get_error(input); }
+                seg->logical.id = value;
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  segment %zu: numeric 32-bit 0x%08X", path->segment_count, value);
                 break;
             }
 

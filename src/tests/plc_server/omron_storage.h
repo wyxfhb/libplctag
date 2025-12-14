@@ -229,6 +229,18 @@ omron_variable_t* omron_variable_find_by_name(omron_registry_t *registry,
                                                const char *name);
 
 /**
+ * @brief Find variable by name with length
+ *
+ * @param registry Registry to search
+ * @param name Variable name (may not be null-terminated)
+ * @param name_len Length of name
+ * @return Variable pointer, or NULL if not found
+ */
+omron_variable_t* omron_variable_find_by_name_len(omron_registry_t *registry,
+                                                   const char *name,
+                                                   size_t name_len);
+
+/**
  * @brief Destroy a variable
  *
  * Frees the variable and its data buffer.

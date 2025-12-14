@@ -273,6 +273,21 @@ omron_variable_t* omron_variable_find_by_name(omron_registry_t *registry,
     return NULL;
 }
 
+omron_variable_t* omron_variable_find_by_name_len(omron_registry_t *registry,
+                                                   const char *name, size_t name_len) {
+    if (!registry || !name) {
+        return NULL;
+    }
+
+    for (omron_variable_t *var = registry->variables; var != NULL; var = var->next) {
+        if (strlen(var->name) == name_len && strncmp(var->name, name, name_len) == 0) {
+            return var;
+        }
+    }
+
+    return NULL;
+}
+
 void omron_variable_destroy(omron_variable_t *var) {
     if (!var) {
         return;

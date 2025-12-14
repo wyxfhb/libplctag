@@ -70,9 +70,13 @@ static plc_context_t *g_server = NULL;
  * ============================================================================ */
 
 void signal_handler(void) {
-    if(g_server) {
-        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Shutdown signal received");
-        g_server->running = 0;
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Shutdown signal received");
+    if(g_server && g_server->coro_net) {
+        g_server->running = false;
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Stopping event loop");
+        coro_stop(g_server->coro_net);
+    } else {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "No event loop to stop!");
     }
 }
 
@@ -209,6 +213,36 @@ static void listener_handler(coro_task_handle_t handle, socket_t fd, void *conte
  * Main Entry Point
  * ============================================================================ */
 
+
+static args_flag_def_t flags[] = {{.name = "listen",
+                                   .type = ARGS_TYPE_STRING,
+                                   .required = ARGS_OPTIONAL,
+                                   .repeat = ARGS_MULTIPLE,
+                                   .description = "Address:port to bind (default: 0.0.0.0:44818)",
+                                   .default_value = {.has_default = true, .value.string_val = "0.0.0.0:44818"}},
+                                  {.name = "debug",
+                                   .type = ARGS_TYPE_STRING,
+                                   .required = ARGS_OPTIONAL,
+                                   .repeat = ARGS_ONCE,
+                                   .description = "Log level: none|error|warn|info|detail|spew",
+                                   .default_value = {.has_default = true, .value.string_val = "info"}},
+                                  {.name = "plc-type",
+                                   .type = ARGS_TYPE_STRING,
+                                   .required = ARGS_OPTIONAL,
+                                   .repeat = ARGS_ONCE,
+                                   .description = "PLC type: micro800|controllogix|omron",
+                                   .default_value = {.has_default = true, .value.string_val = "micro800"}},
+                                  {
+                                      .name = "help",
+                                      .type = ARGS_TYPE_BOOL,
+                                      .required = ARGS_OPTIONAL,
+                                      .repeat = ARGS_ONCE,
+                                      .description = "Show this help message",
+                                      .default_value = {.has_default = false},
+                                  }};
+static size_t num_flags = sizeof(flags) / sizeof(flags[0]);
+
+
 int main(int argc, char *argv[]) {
     plc_context_t server = {0};
     g_server = &server;
@@ -224,14 +258,6 @@ int main(int argc, char *argv[]) {
     }
 
     /* ===== PHASE 2: ARGUMENT PARSING ===== */
-    args_flag_def_t flags[] = {
-        {"listen", ARGS_TYPE_STRING, ARGS_OPTIONAL, ARGS_MULTIPLE, "Address:port to bind (default: 0.0.0.0:44818)",
-         "0.0.0.0:44818"},
-        {"debug", ARGS_TYPE_STRING, ARGS_OPTIONAL, ARGS_ONCE, "Log level: none|error|warn|info|detail|spew", "info"},
-        {"plc-type", ARGS_TYPE_STRING, ARGS_OPTIONAL, ARGS_ONCE, "PLC type: micro800|controllogix|omron", "micro800"},
-        {"help", ARGS_TYPE_BOOL, ARGS_OPTIONAL, ARGS_ONCE, "Show this help message", NULL},
-    };
-    size_t num_flags = sizeof(flags) / sizeof(flags[0]);
 
     util_err_t parse_rc = args_parse(argc, argv, flags, num_flags, &args_result);
     if(parse_rc != UTIL_OK || args_get_bool(&args_result, "help")) {
@@ -241,7 +267,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* ===== PHASE 3: LOGGING CONFIGURATION ===== */
-    const char *debug_str = args_get_string(&args_result, "debug");
+    char *debug_str = args_get_string(&args_result, "debug");
     log_level_t log_level = LOG_LEVEL_INFO; /* default */
     if(debug_str) {
         if(strcmp(debug_str, "none") == 0) {
@@ -308,9 +334,9 @@ int main(int argc, char *argv[]) {
         *real_data = 3.14159f;
     }
 
-    /* Create Omron array */
-    omron_variable_create_array(server.omron_registry, "OmronArray", 0xC4, 4, 10);
-    omron_variable_t *array_var = omron_variable_find_by_name(server.omron_registry, "OmronArray");
+    /* Create Omron array (named myTag for test compatibility) */
+    omron_variable_create_array(server.omron_registry, "myTag", 0xC4, 4, 10);
+    omron_variable_t *array_var = omron_variable_find_by_name(server.omron_registry, "myTag");
     if(array_var) {
         int32_t *array_data = (int32_t *)array_var->data;
         for(int i = 0; i < 10; i++) { array_data[i] = i * 100; }
@@ -389,14 +415,16 @@ int main(int argc, char *argv[]) {
     if(listen_count == 0) { listen_count = 1; }
 
     for(size_t i = 0; i < listen_count; i++) {
-        const char *listen_addr = (listen_count > 0) ? args_get_at(&args_result, "listen", i).value.string_val : "0.0.0.0:44818";
+        char *listen_addr = (listen_count > 0) ? args_get_at(&args_result, "listen", i).value.string_val : "0.0.0.0:44818";
 
         /* Parse address:port */
         char addr_str[256];
         uint16_t port = 44818;
         char *colon_pos = strrchr((char *)listen_addr, ':');
         if(colon_pos) {
-            size_t addr_len = colon_pos - listen_addr;
+            ptrdiff_t addr_len_diff = (ptrdiff_t)colon_pos - (ptrdiff_t)listen_addr;
+            if(addr_len_diff < 0) { addr_len_diff = 0; }
+            size_t addr_len = (size_t)addr_len_diff;
             if(addr_len >= sizeof(addr_str)) { addr_len = sizeof(addr_str) - 1; }
             strncpy(addr_str, listen_addr, addr_len);
             addr_str[addr_len] = '\0';

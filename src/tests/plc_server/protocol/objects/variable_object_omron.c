@@ -82,17 +82,37 @@ static variable_object_omron_context_t *vo_context = NULL;
 static util_err_t variable_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
                                                       cip_object_instance_t *instance, plc_context_t *plc) {
 
-    (void)path;
     (void)request;
-    (void)plc;
 
-    if(!instance || !instance->instance_data) {
+    omron_variable_t *var = NULL;
+
+    /* If path has a symbolic segment, look up the variable by tag name */
+    if(path && path->segment_count > 0 && path->segments[0].type == CIP_SEGMENT_SYMBOLIC) {
+        if(!vo_context || !vo_context->registry) {
+            pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: registry not initialized");
+            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            return UTIL_ENOTFOUND;
+        }
+
+        /* Look up variable by tag name */
+        const char *tag_name = path->segments[0].symbolic.name;
+        size_t tag_name_len = path->segments[0].symbolic.length;
+        var = omron_variable_find_by_name_len(vo_context->registry, tag_name, tag_name_len);
+
+        if(!var) {
+            pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: variable '%.*s' not found",
+                  (int)tag_name_len, tag_name);
+            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            return UTIL_ENOTFOUND;
+        }
+    } else if(instance && instance->instance_data) {
+        /* Use provided instance */
+        var = (omron_variable_t *)instance->instance_data;
+    } else {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: invalid instance");
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
-
-    omron_variable_t *var = (omron_variable_t *)instance->instance_data;
 
     pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: variable '%s' id=%u size=%zu type=0x%02X",
           var->name, var->instance_id, var->data_size, var->type_code);

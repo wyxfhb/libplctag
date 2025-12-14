@@ -82,11 +82,11 @@ static util_err_t symbol_service_read_tag(uint8_t service, const cip_path_t *pat
     }
 
     /* Create null-terminated tag name for lookup */
-    char tag_name[256];
+    char tag_name[256] = {0};
     size_t name_len = path->segments[0].symbolic.length;
     if(name_len >= sizeof(tag_name)) { name_len = sizeof(tag_name) - 1; }
     memcpy(tag_name, path->segments[0].symbolic.name, name_len);
-    tag_name[name_len] = '\0';
+    tag_name[name_len] = '\0'; /* not needed because of the {0} above? */
 
     pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag (CLogix): looking up '%s' (element_count=%u)", tag_name,
           element_count);
