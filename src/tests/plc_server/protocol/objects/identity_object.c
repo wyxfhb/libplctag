@@ -36,17 +36,17 @@
 #include "identity_object.h"
 #include "../cip_message_router.h"
 #include "../../plc_context.h"
-#include "log.h"
-#include "buf.h"
+#include "../../../utils/log.h"
+#include "../../../utils/buf.h"
 
 /* Identity Object Device Information */
-#define VENDOR_ID           0x0002  /* Rockwell Automation */
-#define PRODUCT_TYPE        0x0002  /* Programmable Logic Controller */
-#define PRODUCT_CODE        0x2F58  /* Micro800 */
-#define REVISION_MAJOR      0x01
-#define REVISION_MINOR      0x00
-#define SERIAL_NUMBER       0x00001234  /* Dummy serial */
-#define PRODUCT_NAME        "libplctag PLC Simulator - Micro800"
+#define VENDOR_ID 0x0002    /* Rockwell Automation */
+#define PRODUCT_TYPE 0x0002 /* Programmable Logic Controller */
+#define PRODUCT_CODE 0x2F58 /* Micro800 */
+#define REVISION_MAJOR 0x01
+#define REVISION_MINOR 0x00
+#define SERIAL_NUMBER 0x00001234 /* Dummy serial */
+#define PRODUCT_NAME "libplctag PLC Simulator - Micro800"
 
 /* ============================================================================
  * Service: Get Attributes All (0x01)
@@ -70,21 +70,15 @@
  *   [12-13] uint16_le  Product Name Length
  *   [14+]   uint8[]    Product Name (padded to word boundary)
  */
-static util_err_t identity_service_get_attributes_all(
-    uint8_t service,
-    const cip_path_t *path,
-    buf_t *request,
-    buf_t *response,
-    cip_object_instance_t *instance,
-    plc_context_t *plc) {
+static util_err_t identity_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
+                                                      cip_object_instance_t *instance, plc_context_t *plc) {
 
     (void)path;
     (void)request;
     (void)plc;
     (void)instance;
 
-    pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_DETAIL,
-          "Get Attributes All: building device information");
+    pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: building device information");
 
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
@@ -119,14 +113,12 @@ static util_err_t identity_service_get_attributes_all(
     size_t padded_len = name_words * 2;
     ok &= buf_write_bytes(response, "product_name", padded_name, padded_len);
 
-    if (!ok) {
-        pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_ERROR,
-              "Get Attributes All: failed to write response");
+    if(!ok) {
+        pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_ERROR, "Get Attributes All: failed to write response");
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_DETAIL,
-          "Get Attributes All: vendor=0x%04X device=0x%04X serial=0x%08X",
+    pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: vendor=0x%04X device=0x%04X serial=0x%08X",
           VENDOR_ID, PRODUCT_TYPE, SERIAL_NUMBER);
 
     return UTIL_OK;
@@ -136,17 +128,14 @@ static util_err_t identity_service_get_attributes_all(
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t* identity_get_instance(uint32_t instance_id,
-                                                     plc_context_t *plc) {
+static cip_object_instance_t *identity_get_instance(uint32_t instance_id, plc_context_t *plc) {
     (void)plc;
 
     /* Identity object typically has only instance 1 */
-    if (instance_id != 1) {
-        return NULL;
-    }
+    if(instance_id != 1) { return NULL; }
 
     static cip_object_instance_t instance = {
-        .object_class = NULL,  /* Will be set by registry */
+        .object_class = NULL, /* Will be set by registry */
         .instance_id = 1,
         .instance_data = NULL,
     };
@@ -159,9 +148,7 @@ static cip_object_instance_t* identity_get_instance(uint32_t instance_id,
 
 void identity_object_register(cip_object_registry_t *registry) {
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));
-    if (!cls) {
-        return;
-    }
+    if(!cls) { return; }
 
     cls->class_id = 0x01;
     cls->class_name = "Identity Object";
@@ -175,6 +162,5 @@ void identity_object_register(cip_object_registry_t *registry) {
     /* Register in registry */
     cip_registry_register_class(registry, cls);
 
-    pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_INFO,
-          "Registered Identity Object (Class 0x01)");
+    pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_INFO, "Registered Identity Object (Class 0x01)");
 }

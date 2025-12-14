@@ -38,8 +38,8 @@
 #include "../cip_message_router.h"
 #include "../../tag_storage.h"
 #include "../../plc_context.h"
-#include "log.h"
-#include "buf.h"
+#include "../../../utils/log.h"
+#include "../../../utils/buf.h"
 
 /* ============================================================================
  * Service: Read Tag (0x4C)

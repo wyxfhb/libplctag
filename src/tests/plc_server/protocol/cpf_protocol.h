@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "buf.h"
-#include "err.h"
+#include "../../utils/buf.h"
+#include "../../utils/err.h"
 
 /* Forward declarations */
 typedef struct plc_context_s plc_context_t;
@@ -13,10 +13,10 @@ typedef struct plc_context_s plc_context_t;
  * ============================================================================ */
 
 /* CPF Item Type IDs */
-#define CPF_ITEM_NULL_ADDRESS       0x0000  /* Null Address */
-#define CPF_ITEM_CONNECTED_ADDRESS  0x00A1  /* Connected Address Item */
-#define CPF_ITEM_CONNECTED_DATA     0x00B1  /* Connected Data Item */
-#define CPF_ITEM_UNCONNECTED_DATA   0x00B2  /* Unconnected Data Item (most common) */
+#define CPF_ITEM_NULL_ADDRESS 0x0000      /* Null Address */
+#define CPF_ITEM_CONNECTED_ADDRESS 0x00A1 /* Connected Address Item */
+#define CPF_ITEM_CONNECTED_DATA 0x00B1    /* Connected Data Item */
+#define CPF_ITEM_UNCONNECTED_DATA 0x00B2  /* Unconnected Data Item (most common) */
 
 /* ============================================================================
  * CPF Data Structures
@@ -29,9 +29,9 @@ typedef struct plc_context_s plc_context_t;
  * Data is stored as pointer + length, not copied.
  */
 typedef struct {
-    uint16_t type_id;               /* Item type (CPF_ITEM_*) */
-    uint16_t length;                /* Length of data */
-    const uint8_t *data;            /* Pointer to item data (in input buffer) */
+    uint16_t type_id;    /* Item type (CPF_ITEM_*) */
+    uint16_t length;     /* Length of data */
+    const uint8_t *data; /* Pointer to item data (in input buffer) */
 } cpf_item_t;
 
 /**
@@ -40,8 +40,8 @@ typedef struct {
  * Represents a parsed CPF packet with its items.
  */
 typedef struct {
-    uint16_t item_count;            /* Number of items in packet */
-    cpf_item_t items[8];            /* Item array (max 8 items) */
+    uint16_t item_count; /* Number of items in packet */
+    cpf_item_t items[8]; /* Item array (max 8 items) */
 } cpf_packet_t;
 
 /* ============================================================================
@@ -72,5 +72,4 @@ util_err_t cpf_parse_packet(buf_t *input, cpf_packet_t *packet);
  * @param plc PLC context (passed to CIP router)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input,
-                       buf_t *output, plc_context_t *plc);
+util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input, buf_t *output, plc_context_t *plc);

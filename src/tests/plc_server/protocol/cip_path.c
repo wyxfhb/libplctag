@@ -33,7 +33,7 @@
 
 #include <string.h>
 #include "cip_path.h"
-#include "log.h"
+#include "../../utils/log.h"
 
 /* ============================================================================
  * CIP Path Parsing

@@ -16,19 +16,21 @@ add_executable(plc_server
     protocol/objects/tag_name_server_omron.c
     protocol/objects/variable_object_omron.c
     protocol/objects/variable_type_object_omron.c
+    ${TEST_UTILS_DIR}/args.c
+    ${TEST_UTILS_DIR}/buf.c
+    ${TEST_UTILS_DIR}/coro_net.c
+    ${TEST_UTILS_DIR}/err.c
+    ${TEST_UTILS_DIR}/log.c
+    ${TEST_UTILS_DIR}/socket.c
+    ${TEST_UTILS_DIR}/utils.c
 )
 
 # Include paths - access to utility headers
 target_include_directories(plc_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils
+    ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_UTILS_DIR}
 )
 
-# Link utility libraries
-target_link_libraries(plc_server PRIVATE
-    utils           # buf.h, socket.h, log.h, err.h, args.h, utils.h
-    coro_net        # coro_net.h (event loop + coroutines)
-)
 
 # Platform-specific socket libraries
 if(WIN32)

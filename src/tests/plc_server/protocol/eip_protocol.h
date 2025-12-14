@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "buf.h"
-#include "err.h"
+#include "../../utils/buf.h"
+#include "../../utils/err.h"
 
 /* Forward declarations */
 typedef struct plc_context_s plc_context_t;
@@ -15,14 +15,14 @@ typedef struct plc_context_s plc_context_t;
 #define EIP_HEADER_SIZE 24
 
 /* EIP Command Codes (Appendix B from DESIGN.md) */
-#define EIP_CMD_NOP                 0x0000
-#define EIP_CMD_LIST_SERVICES       0x0004
-#define EIP_CMD_LIST_IDENTITY       0x0063
-#define EIP_CMD_LIST_INTERFACES     0x0064
-#define EIP_CMD_REGISTER_SESSION    0x0065
-#define EIP_CMD_UNREGISTER_SESSION  0x0066
-#define EIP_CMD_SEND_RR_DATA        0x006F  /* Unconnected */
-#define EIP_CMD_SEND_UNIT_DATA      0x0070  /* Connected */
+#define EIP_CMD_NOP 0x0000
+#define EIP_CMD_LIST_SERVICES 0x0004
+#define EIP_CMD_LIST_IDENTITY 0x0063
+#define EIP_CMD_LIST_INTERFACES 0x0064
+#define EIP_CMD_REGISTER_SESSION 0x0065
+#define EIP_CMD_UNREGISTER_SESSION 0x0066
+#define EIP_CMD_SEND_RR_DATA 0x006F   /* Unconnected */
+#define EIP_CMD_SEND_UNIT_DATA 0x0070 /* Connected */
 
 /* ============================================================================
  * EIP Data Structures
@@ -40,12 +40,12 @@ typedef struct plc_context_s plc_context_t;
  * [20-23] uint32_le  Options (usually 0)
  */
 typedef struct {
-    uint16_t command;           /* EIP command code */
-    uint16_t length;            /* Length of data after header */
-    uint32_t session_handle;    /* Session identifier */
-    uint32_t status;            /* Response status code */
-    uint64_t sender_context;    /* Echo back in response */
-    uint32_t options;           /* Command-specific flags */
+    uint16_t command;        /* EIP command code */
+    uint16_t length;         /* Length of data after header */
+    uint32_t session_handle; /* Session identifier */
+    uint32_t status;         /* Response status code */
+    uint64_t sender_context; /* Echo back in response */
+    uint32_t options;        /* Command-specific flags */
 } eip_header_t;
 
 /**
@@ -54,8 +54,8 @@ typedef struct {
  * Tracks session state for a single client connection.
  */
 typedef struct {
-    uint32_t session_handle;    /* Session handle assigned by server */
-    bool registered;            /* True after successful RegisterSession */
+    uint32_t session_handle; /* Session handle assigned by server */
+    bool registered;         /* True after successful RegisterSession */
 } eip_session_t;
 
 /* ============================================================================
@@ -99,8 +99,7 @@ util_err_t eip_parse_header(buf_t *input, eip_header_t *header);
  * @param data_length Length of data following this header
  * @return UTIL_OK on success, UTIL_EBOUNDS if buffer too small
  */
-util_err_t eip_build_response_header(buf_t *output, const eip_header_t *req,
-                                     uint32_t status, uint16_t data_length);
+util_err_t eip_build_response_header(buf_t *output, const eip_header_t *req, uint32_t status, uint16_t data_length);
 
 /**
  * @brief Main EIP dispatcher
@@ -114,5 +113,4 @@ util_err_t eip_build_response_header(buf_t *output, const eip_header_t *req,
  * @param plc PLC context (passed to command handlers)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t eip_dispatch(buf_t *input, buf_t *output,
-                       eip_session_t *session, plc_context_t *plc);
+util_err_t eip_dispatch(buf_t *input, buf_t *output, eip_session_t *session, plc_context_t *plc);

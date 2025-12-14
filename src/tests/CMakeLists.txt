@@ -6,6 +6,9 @@ else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_MINSIZEREL}")
 endif()
 
+
+set(TEST_UTILS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/utils)
+
 # Build the AB server (EtherNet/IP simulator)
 add_subdirectory("ab_server")
 

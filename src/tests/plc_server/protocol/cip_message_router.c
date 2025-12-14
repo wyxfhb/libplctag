@@ -34,7 +34,7 @@
 #include "cip_message_router.h"
 #include "cip_path.h"
 #include "cip_object_registry.h"
-#include "log.h"
+#include "../../utils/log.h"
 #include "plc_context.h"
 
 /* ============================================================================

@@ -1,8 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include "buf.h"
-#include "err.h"
+#include "../../utils/buf.h"
+#include "../../utils/err.h"
 
 /* Forward declarations */
 typedef struct plc_context_s plc_context_t;
@@ -12,14 +12,14 @@ typedef struct plc_context_s plc_context_t;
  * ============================================================================ */
 
 /* CIP Status Codes (Appendix A from DESIGN.md) */
-#define CIP_STATUS_OK                       0x00
-#define CIP_STATUS_INVALID_PARAM            0x03
-#define CIP_STATUS_PATH_DEST_UNKNOWN        0x05
-#define CIP_STATUS_PARTIAL_TRANSFER         0x06
-#define CIP_STATUS_SERVICE_NOT_SUPPORTED    0x08
-#define CIP_STATUS_INVALID_ATTRIBUTE        0x09
-#define CIP_STATUS_TOO_MUCH_DATA            0x15
-#define CIP_STATUS_SERVICE_ERROR            0x1E
+#define CIP_STATUS_OK 0x00
+#define CIP_STATUS_INVALID_PARAM 0x03
+#define CIP_STATUS_PATH_DEST_UNKNOWN 0x05
+#define CIP_STATUS_PARTIAL_TRANSFER 0x06
+#define CIP_STATUS_SERVICE_NOT_SUPPORTED 0x08
+#define CIP_STATUS_INVALID_ATTRIBUTE 0x09
+#define CIP_STATUS_TOO_MUCH_DATA 0x15
+#define CIP_STATUS_SERVICE_ERROR 0x1E
 
 /* ============================================================================
  * CIP Data Structures
@@ -31,8 +31,8 @@ typedef struct plc_context_s plc_context_t;
  * Parsed CIP service request header.
  */
 typedef struct {
-    uint8_t service;                /* Service code (0x4C, 0x4D, etc.) */
-    uint8_t path_size;              /* Path size in words */
+    uint8_t service;   /* Service code (0x4C, 0x4D, etc.) */
+    uint8_t path_size; /* Path size in words */
     /* Path data follows in buffer */
 } cip_request_t;
 
@@ -63,8 +63,7 @@ util_err_t cip_parse_request(buf_t *input, cip_request_t *request);
  * @param plc PLC context (for object registry, tags, etc.)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output,
-                                       plc_context_t *plc);
+util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, plc_context_t *plc);
 
 /**
  * @brief Build CIP response header

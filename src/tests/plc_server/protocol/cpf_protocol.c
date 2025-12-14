@@ -34,7 +34,7 @@
 #include <string.h>
 #include "cpf_protocol.h"
 #include "cip_message_router.h"
-#include "log.h"
+#include "../../utils/log.h"
 
 /* ============================================================================
  * CPF Parsing
@@ -44,36 +44,30 @@ util_err_t cpf_parse_packet(buf_t *input, cpf_packet_t *packet) {
     memset(packet, 0, sizeof(*packet));
 
     /* Read item count */
-    if (!buf_read_u16_le(input, "item_count", &packet->item_count)) {
-        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN,
-              "CPF: failed to read item count");
+    if(!buf_read_u16_le(input, "item_count", &packet->item_count)) {
+        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN, "CPF: failed to read item count");
         return buf_get_error(input);
     }
 
-    if (packet->item_count > 8) {
-        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN,
-              "CPF: item count %u exceeds max 8",
-              packet->item_count);
+    if(packet->item_count > 8) {
+        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN, "CPF: item count %u exceeds max 8", packet->item_count);
         return UTIL_EINVAL;
     }
 
-    pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL,
-          "CPF: parsing %u items", packet->item_count);
+    pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL, "CPF: parsing %u items", packet->item_count);
 
     /* Parse each item */
-    for (uint16_t i = 0; i < packet->item_count; i++) {
+    for(uint16_t i = 0; i < packet->item_count; i++) {
         cpf_item_t *item = &packet->items[i];
 
         /* Read item type and length */
-        if (!buf_read_u16_le(input, "item_type", &item->type_id)) {
-            pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN,
-                  "CPF: failed to read item %u type", i);
+        if(!buf_read_u16_le(input, "item_type", &item->type_id)) {
+            pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN, "CPF: failed to read item %u type", i);
             return buf_get_error(input);
         }
 
-        if (!buf_read_u16_le(input, "item_length", &item->length)) {
-            pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN,
-                  "CPF: failed to read item %u length", i);
+        if(!buf_read_u16_le(input, "item_length", &item->length)) {
+            pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN, "CPF: failed to read item %u length", i);
             return buf_get_error(input);
         }
 
@@ -81,19 +75,15 @@ util_err_t cpf_parse_packet(buf_t *input, cpf_packet_t *packet) {
         item->data = buf_read_ptr(input);
 
         /* Verify we have the data */
-        if (buf_read_size(input) < item->length) {
-            pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN,
-                  "CPF: item %u length %u exceeds buffer",
-                  i, item->length);
+        if(buf_read_size(input) < item->length) {
+            pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN, "CPF: item %u length %u exceeds buffer", i, item->length);
             return UTIL_EBOUNDS;
         }
 
         /* Advance past item data */
         buf_read_advance(input, item->length);
 
-        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL,
-              "CPF: item %u type=0x%04X length=%u",
-              i, item->type_id, item->length);
+        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL, "CPF: item %u type=0x%04X length=%u", i, item->type_id, item->length);
     }
 
     return UTIL_OK;
@@ -103,26 +93,22 @@ util_err_t cpf_parse_packet(buf_t *input, cpf_packet_t *packet) {
  * CPF Dispatch and Response Building
  * ============================================================================ */
 
-util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input,
-                       buf_t *output, plc_context_t *plc) {
+util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input, buf_t *output, plc_context_t *plc) {
     /* Find unconnected data item (0x00B2) */
     const cpf_item_t *data_item = NULL;
-    for (uint16_t i = 0; i < packet->item_count; i++) {
-        if (packet->items[i].type_id == CPF_ITEM_UNCONNECTED_DATA) {
+    for(uint16_t i = 0; i < packet->item_count; i++) {
+        if(packet->items[i].type_id == CPF_ITEM_UNCONNECTED_DATA) {
             data_item = &packet->items[i];
             break;
         }
     }
 
-    if (!data_item) {
-        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN,
-              "CPF dispatch: no unconnected data item found");
+    if(!data_item) {
+        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_WARN, "CPF dispatch: no unconnected data item found");
         return UTIL_ENOTFOUND;
     }
 
-    pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL,
-          "CPF dispatch: routing CIP message (%u bytes)",
-          data_item->length);
+    pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL, "CPF dispatch: routing CIP message (%u bytes)", data_item->length);
 
     /* Create a buffer view for the CIP message */
     uint8_t cip_request_data[2048];
@@ -137,10 +123,8 @@ util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input,
     /* Dispatch to CIP message router */
     util_err_t err = cip_message_router_dispatch(&cip_request, &cip_response, plc);
 
-    if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL,
-              "CPF dispatch: CIP router returned %s",
-              util_err_str(err));
+    if(err != UTIL_OK) {
+        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_DETAIL, "CPF dispatch: CIP router returned %s", util_err_str(err));
         /* Continue - CIP response contains error code */
     }
 
@@ -158,12 +142,10 @@ util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input,
     ok &= buf_write_u16_le(output, "data_length", buf_write_pos(&cip_response));
 
     /* Write CIP response data */
-    ok &= buf_write_bytes(output, "cip_data",
-                          cip_response_data, buf_write_pos(&cip_response));
+    ok &= buf_write_bytes(output, "cip_data", cip_response_data, buf_write_pos(&cip_response));
 
-    if (!ok) {
-        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_ERROR,
-              "CPF dispatch: failed to build response: %s",
+    if(!ok) {
+        pdlog(LOG_MODULE_CPF_PROTOCOL, LOG_LEVEL_ERROR, "CPF dispatch: failed to build response: %s",
               buf_error_string(buf_get_error(output)));
         return buf_get_error(output);
     }

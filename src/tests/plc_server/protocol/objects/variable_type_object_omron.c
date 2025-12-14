@@ -37,8 +37,8 @@
 #include "../cip_message_router.h"
 #include "../../omron_storage.h"
 #include "../../plc_context.h"
-#include "log.h"
-#include "buf.h"
+#include "../../../utils/log.h"
+#include "../../../utils/buf.h"
 
 /* ============================================================================
  * Variable Type Object Context Storage
@@ -100,21 +100,15 @@ typedef struct {
  *   [12-15] uint32_le  Next member instance ID (0=end)
  *   [16-19] uint32_le  Nesting type ID (if member is structure)
  */
-static util_err_t variable_type_service_get_attributes_all(
-    uint8_t service,
-    const cip_path_t *path,
-    buf_t *request,
-    buf_t *response,
-    cip_object_instance_t *instance,
-    plc_context_t *plc) {
+static util_err_t variable_type_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request,
+                                                           buf_t *response, cip_object_instance_t *instance, plc_context_t *plc) {
 
     (void)path;
     (void)request;
     (void)plc;
 
-    if (!instance || !instance->instance_data) {
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_WARN,
-              "Get Attributes All: invalid instance");
+    if(!instance || !instance->instance_data) {
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: invalid instance");
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
@@ -125,14 +119,12 @@ static util_err_t variable_type_service_get_attributes_all(
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
 
-    if (data->type == VTO_TYPE_DEF) {
+    if(data->type == VTO_TYPE_DEF) {
         /* Type definition response */
         omron_type_def_t *type_def = data->data.type_def;
 
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL,
-              "Get Attributes All: type '%s' id=%u size=%zu members=%zu",
-              type_def->type_name, type_def->type_instance_id,
-              type_def->total_size, type_def->member_count);
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: type '%s' id=%u size=%zu members=%zu",
+              type_def->type_name, type_def->type_instance_id, type_def->total_size, type_def->member_count);
 
         /* Size, type code, array info, reserved */
         ok &= buf_write_u32_le(response, "size", (uint32_t)type_def->total_size);
@@ -163,10 +155,9 @@ static util_err_t variable_type_service_get_attributes_all(
         /* Type member response */
         omron_type_member_t *member = data->data.member;
 
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL,
-              "Get Attributes All: member '%s' id=%u size=%zu offset=%zu next=%u",
-              member->member_name, member->member_instance_id,
-              member->member_size, member->member_offset, member->next_member_id);
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: member '%s' id=%u size=%zu offset=%zu next=%u",
+              member->member_name, member->member_instance_id, member->member_size, member->member_offset,
+              member->next_member_id);
 
         /* Size, type code, array info, reserved */
         ok &= buf_write_u32_le(response, "size", (uint32_t)member->member_size);
@@ -184,9 +175,8 @@ static util_err_t variable_type_service_get_attributes_all(
         ok &= buf_write_u32_le(response, "nesting_type_id", member->nesting_type_id);
     }
 
-    if (!ok) {
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_ERROR,
-              "Get Attributes All: failed to write response");
+    if(!ok) {
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_ERROR, "Get Attributes All: failed to write response");
         return buf_get_error(response);
     }
 
@@ -197,36 +187,28 @@ static util_err_t variable_type_service_get_attributes_all(
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t* variable_type_get_instance(uint32_t instance_id,
-                                                          plc_context_t *plc) {
+static cip_object_instance_t *variable_type_get_instance(uint32_t instance_id, plc_context_t *plc) {
     (void)plc;
 
-    if (!vto_context || !vto_context->registry) {
-        return NULL;
-    }
+    if(!vto_context || !vto_context->registry) { return NULL; }
 
     /* Try to find as a type definition first */
-    omron_type_def_t *type_def = omron_type_find_by_id(vto_context->registry,
-                                                        instance_id);
-    if (type_def) {
+    omron_type_def_t *type_def = omron_type_find_by_id(vto_context->registry, instance_id);
+    if(type_def) {
         /* Allocate instance data */
-        vto_instance_data_t *data = (vto_instance_data_t *)
-            calloc(1, sizeof(*data));
-        if (!data) {
-            return NULL;
-        }
+        vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
+        if(!data) { return NULL; }
         data->type = VTO_TYPE_DEF;
         data->data.type_def = type_def;
 
         /* Allocate instance structure */
-        cip_object_instance_t *instance = (cip_object_instance_t *)
-            calloc(1, sizeof(*instance));
-        if (!instance) {
+        cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
+        if(!instance) {
             free(data);
             return NULL;
         }
 
-        instance->object_class = NULL;  /* Will be set by registry */
+        instance->object_class = NULL; /* Will be set by registry */
         instance->instance_id = instance_id;
         instance->instance_data = (void *)data;
 
@@ -234,27 +216,22 @@ static cip_object_instance_t* variable_type_get_instance(uint32_t instance_id,
     }
 
     /* Try to find as a type member */
-    omron_type_member_t *member = omron_member_find_by_id(vto_context->registry,
-                                                          instance_id);
-    if (member) {
+    omron_type_member_t *member = omron_member_find_by_id(vto_context->registry, instance_id);
+    if(member) {
         /* Allocate instance data */
-        vto_instance_data_t *data = (vto_instance_data_t *)
-            calloc(1, sizeof(*data));
-        if (!data) {
-            return NULL;
-        }
+        vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
+        if(!data) { return NULL; }
         data->type = VTO_TYPE_MEMBER;
         data->data.member = member;
 
         /* Allocate instance structure */
-        cip_object_instance_t *instance = (cip_object_instance_t *)
-            calloc(1, sizeof(*instance));
-        if (!instance) {
+        cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
+        if(!instance) {
             free(data);
             return NULL;
         }
 
-        instance->object_class = NULL;  /* Will be set by registry */
+        instance->object_class = NULL; /* Will be set by registry */
         instance->instance_id = instance_id;
         instance->instance_data = (void *)data;
 
@@ -268,27 +245,19 @@ static cip_object_instance_t* variable_type_get_instance(uint32_t instance_id,
  * Registration
  * ============================================================================ */
 
-void variable_type_object_omron_register(cip_object_registry_t *registry,
-                                          omron_registry_t *omron_registry) {
-    if (!registry || !omron_registry) {
-        return;
-    }
+void variable_type_object_omron_register(cip_object_registry_t *registry, omron_registry_t *omron_registry) {
+    if(!registry || !omron_registry) { return; }
 
     /* Store registry for service handlers */
-    if (!vto_context) {
-        vto_context = (variable_type_object_omron_context_t *)
-            calloc(1, sizeof(*vto_context));
-        if (!vto_context) {
-            return;
-        }
+    if(!vto_context) {
+        vto_context = (variable_type_object_omron_context_t *)calloc(1, sizeof(*vto_context));
+        if(!vto_context) { return; }
     }
     vto_context->registry = omron_registry;
 
     /* Create and register the object class */
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));
-    if (!cls) {
-        return;
-    }
+    if(!cls) { return; }
 
     cls->class_id = 0x6C;
     cls->class_name = "Variable Type Object (Omron)";
@@ -302,6 +271,5 @@ void variable_type_object_omron_register(cip_object_registry_t *registry,
     /* Register in registry */
     cip_registry_register_class(registry, cls);
 
-    pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_INFO,
-          "Registered Variable Type Object (Class 0x6C)");
+    pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_INFO, "Registered Variable Type Object (Class 0x6C)");
 }

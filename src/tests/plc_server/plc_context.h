@@ -2,7 +2,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "coro_net.h"
+#include "../utils/buf.h"
+#include "../utils/coro_net.h"
 #include "protocol/cip_object_registry.h"
 #include "protocol/eip_protocol.h"
 
