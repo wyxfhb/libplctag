@@ -177,6 +177,7 @@ bool buf_reserve_read(buf_t *src, size_t reservation_size, buf_t *dest) {
         return false;
     }
 
+    dest->data = src->data;
     dest->capacity = reservation_size;
     dest->read = src->read;
 
@@ -208,6 +209,7 @@ bool buf_reserve_write(buf_t *src, size_t reservation_size, buf_t *dest) {
         return false;
     }
 
+    dest->data = src->data;
     dest->capacity = reservation_size;
     dest->read = src->write;
 
