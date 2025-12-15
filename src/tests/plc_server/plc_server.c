@@ -308,8 +308,23 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    /* Register CIP objects */
-    symbol_object_micro800_register(server.registry);
+    /* Register CIP objects - select symbol object based on PLC type */
+    char *plc_type_str = args_get_string(&args_result, "plc-type");
+    if(!plc_type_str) {
+        plc_type_str = "micro800"; /* fallback default */
+    }
+
+    if(strcmp(plc_type_str, "controllogix") == 0) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering ControlLogix symbol object");
+        symbol_object_controllogix_register(server.registry);
+    } else if(strcmp(plc_type_str, "micro800") == 0) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering Micro800 symbol object");
+        symbol_object_micro800_register(server.registry);
+    } else {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Unknown PLC type: %s (using micro800)", plc_type_str);
+        symbol_object_micro800_register(server.registry);
+    }
+
     identity_object_register(server.registry);
     connection_manager_object_register(server.registry);
 
@@ -433,7 +448,7 @@ int main(int argc, char *argv[]) {
 
     pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Created 100+ test tags");
 
-    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "PLC Server starting (debug=%s)", debug_str);
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "PLC Server starting (type=%s, debug=%s)", plc_type_str, debug_str);
 
     /* ===== PHASE 5: COROUTINE SYSTEM INITIALIZATION ===== */
     err = coro_create(&server.coro_net, 256); /* max 256 tasks */
@@ -452,7 +467,15 @@ int main(int argc, char *argv[]) {
     if(listen_count == 0) { listen_count = 1; }
 
     for(size_t i = 0; i < listen_count; i++) {
-        char *listen_addr = (listen_count > 0) ? args_get_at(&args_result, "listen", i).value.string_val : "0.0.0.0:44818";
+        /* Get listen address, with fallback to default */
+        char *listen_addr = NULL;
+        if(listen_count > 0) {
+            args_value_t listen_value = args_get_at(&args_result, "listen", i);
+            listen_addr = (listen_value.present && listen_value.value.string_val) ? listen_value.value.string_val : NULL;
+        }
+        if(!listen_addr) {
+            listen_addr = "0.0.0.0:44818";
+        }
 
         /* Parse address:port */
         char addr_str[256];

@@ -291,10 +291,13 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
     uint32_t max_response = 0;
 
     /* Note: The path may contain instance_id for pagination */
-    if(path && path->segment_count > 1 &&
-       path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT) {
-        start_instance = path->segments[1].logical.id;
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: pagination instance = %u", start_instance);
+    if(path && path->segment_count > 1) {
+        if(path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT ||
+           path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_16BIT ||
+           path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_32BIT) {
+            start_instance = path->segments[1].logical.id;
+            pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: pagination instance = %u", start_instance);
+        }
     }
 
     /* Read optional request parameters if present */
@@ -426,15 +429,15 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
     /* CIP response header format:
      * [0] Reply service (0x55 | 0x80 = 0xD5)
      * [1] Reserved (0x00)
-     * [2] Extended status size (0x00)
-     * [3] Status code (0x00 for success, 0x06 for more data, etc.)
+     * [2] Status code (0x00 for success, 0x06 for more data, etc.)
+     * [3] Extended status size (0x00)
      */
     buf_reset(&cip_header_buf);
     bool header_ok = true;
     header_ok &= buf_write_u8(&cip_header_buf, "reply_service", service | 0x80);
     header_ok &= buf_write_u8(&cip_header_buf, "reserved", 0x00);
-    header_ok &= buf_write_u8(&cip_header_buf, "ext_status_size", 0x00);
     header_ok &= buf_write_u8(&cip_header_buf, "status_code", status_code);
+    header_ok &= buf_write_u8(&cip_header_buf, "ext_status_size", 0x00);
 
     if(!header_ok) {
         pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags: failed to write CIP header");
