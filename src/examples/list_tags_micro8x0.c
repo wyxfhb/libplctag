@@ -132,7 +132,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    plc_tag_set_debug_level(PLCTAG_DEBUG_ERROR);
+    plc_tag_set_debug_level(PLCTAG_DEBUG_DETAIL);
 
     printf("Starting with library version %d.%d.%d.\n", version_major, version_minor, version_patch);
 
