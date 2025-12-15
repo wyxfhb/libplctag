@@ -53,6 +53,7 @@
 #include "protocol/objects/symbol_object_micro800.h"
 #include "protocol/objects/symbol_object_controllogix.h"
 #include "protocol/objects/identity_object.h"
+#include "protocol/objects/connection_manager.h"
 #include "protocol/objects/tag_name_server_omron.h"
 #include "protocol/objects/variable_object_omron.h"
 #include "protocol/objects/variable_type_object_omron.h"
@@ -94,19 +95,24 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
 
     CORO_START(handle);
 
-    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Client handler started");
+    pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_INFO, "Client handler started");
 
     while(1) {
         /* Compact receive buffer to maximize space for new data */
         buf_compact(&client->recv_buf);
 
+        pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, "Going to wait for data from the client.");
+
         /* Read EIP frame with automatic retry on incomplete frame */
         socket_read_yield(handle, &client->recv_buf, eip_frame_check, client, NULL, NULL, err);
 
         if(err != UTIL_OK) {
-            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_WARN, "Client read failed: %s", util_err_str(err));
+            pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_WARN, "Client read failed: %s", util_err_str(err));
             break;
         }
+
+        pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, "Received data:");
+        pdlog_bytes(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, &client->recv_buf);
 
         /* Reset send buffer for response building */
         buf_reset(&client->send_buf);
@@ -115,20 +121,23 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         err = eip_dispatch(&client->recv_buf, &client->send_buf, &client->session, client->plc);
 
         if(err != UTIL_OK) {
-            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_DETAIL, "EIP dispatch returned: %s", util_err_str(err));
+            pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, "EIP dispatch returned: %s", util_err_str(err));
             /* Continue - error response was already built */
         }
+
+        pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, "Response data:");
+        pdlog_bytes(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, &client->send_buf);
 
         /* Send response */
         socket_write_yield(handle, &client->send_buf, err);
 
         if(err != UTIL_OK) {
-            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_WARN, "Client write failed: %s", util_err_str(err));
+            pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_WARN, "Client write failed: %s", util_err_str(err));
             break;
         }
     }
 
-    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Client handler closing");
+    pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_INFO, "Client handler closing");
 
     /* Cleanup */
     coro_remove_task(client->handle);
@@ -301,10 +310,10 @@ int main(int argc, char *argv[]) {
 
     /* Register CIP objects */
     symbol_object_micro800_register(server.registry);
-    symbol_object_controllogix_register(server.registry);
     identity_object_register(server.registry);
+    connection_manager_object_register(server.registry);
 
-    /* Initialize Omron registry and register Omron objects */
+    /* Omron support disabled - this server simulates Micro800, not Omron
     server.omron_registry = omron_registry_create();
     if(!server.omron_registry) {
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to create Omron registry");
@@ -313,13 +322,13 @@ int main(int argc, char *argv[]) {
         socket_cleanup();
         return EXIT_FAILURE;
     }
-
-    /* Register Omron CIP objects */
     tag_name_server_omron_register(server.registry, server.omron_registry);
     variable_object_omron_register(server.registry, server.omron_registry);
     variable_type_object_omron_register(server.registry, server.omron_registry);
+    */
+    server.omron_registry = NULL;
 
-    /* Create Omron test variables */
+    /* Omron test variables disabled
     omron_variable_create(server.omron_registry, "OmronDINT", 0xC4, 4);
     omron_variable_t *dint_var = omron_variable_find_by_name(server.omron_registry, "OmronDINT");
     if(dint_var) {
@@ -334,7 +343,6 @@ int main(int argc, char *argv[]) {
         *real_data = 3.14159f;
     }
 
-    /* Create Omron array (named myTag for test compatibility) */
     omron_variable_create_array(server.omron_registry, "myTag", 0xC4, 4, 10);
     omron_variable_t *array_var = omron_variable_find_by_name(server.omron_registry, "myTag");
     if(array_var) {
@@ -342,59 +350,88 @@ int main(int argc, char *argv[]) {
         for(int i = 0; i < 10; i++) { array_data[i] = i * 100; }
     }
 
-    /* Create Omron string */
     omron_variable_create_string(server.omron_registry, "OmronString", "Hello Omron");
 
-    /* Create Omron structure type */
     omron_type_def_t *point_type = omron_type_create(server.omron_registry, "Point", 4);
     if(point_type) {
         omron_member_add(server.omron_registry, point_type, "x", 0xC3, 0, 2);
         omron_member_add(server.omron_registry, point_type, "y", 0xC3, 2, 2);
-
-        /* Create an instance of the Point structure */
         omron_variable_create_struct(server.omron_registry, "Point1", point_type->type_instance_id, point_type);
     }
+    */
 
-    /* Create test tags */
-    server.tags = tag_create_dint("TestDINT", 42);
-    if(server.tags) {
-        server.tags->next = tag_create_real("TestREAL", 3.14159f);
-        if(server.tags->next) {
-            server.tags->next->next = tag_create_dint_array("TestDINT_Array", 10);
-            if(server.tags->next->next) {
-                /* Initialize array with test values */
-                int32_t *array_data = (int32_t *)server.tags->next->next->data;
-                for(int i = 0; i < 10; i++) { array_data[i] = i * 10; }
+    /* Create 100+ test tags for comprehensive testing */
+    server.tags = NULL;
+    tag_def_t *last_tag = NULL;
 
-                /* Add 2D array tag */
-                size_t dims_2d[2] = {3, 4}; /* 3x4 matrix */
-                server.tags->next->next->next = tag_create_dint_array_multi("TestDINT_2D", 2, dims_2d);
-                if(server.tags->next->next->next) {
-                    /* Initialize 2D array with sequential values */
-                    int32_t *array_2d = (int32_t *)server.tags->next->next->next->data;
-                    for(int i = 0; i < 12; i++) { array_2d[i] = i + 100; }
-
-                    /* Add 3D array tag */
-                    size_t dims_3d[3] = {2, 2, 2}; /* 2x2x2 cube */
-                    server.tags->next->next->next->next = tag_create_dint_array_multi("TestDINT_3D", 3, dims_3d);
-                    if(server.tags->next->next->next->next) {
-                        /* Initialize 3D array */
-                        int32_t *array_3d = (int32_t *)server.tags->next->next->next->next->data;
-                        for(int i = 0; i < 8; i++) { array_3d[i] = i + 1000; }
-
-                        /* Add 2D REAL array */
-                        size_t dims_real_2d[2] = {2, 3}; /* 2x3 matrix */
-                        server.tags->next->next->next->next->next = tag_create_real_array_multi("TestREAL_2D", 2, dims_real_2d);
-                        if(server.tags->next->next->next->next->next) {
-                            /* Initialize REAL 2D array */
-                            float *array_real_2d = (float *)server.tags->next->next->next->next->next->data;
-                            for(int i = 0; i < 6; i++) { array_real_2d[i] = (float)i + 0.5f; }
-                        }
-                    }
-                }
-            }
+    /* Create scalar DINT tags (tags 1-30) */
+    for(size_t i = 1; i <= 30; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "Scalar_DINT_%03zu", i);
+        tag_def_t *new_tag = tag_create_dint(name, (int32_t)(i * 100));
+        if(new_tag) {
+            if(!server.tags) { server.tags = new_tag; }
+            if(last_tag) { last_tag->next = new_tag; }
+            last_tag = new_tag;
         }
     }
+
+    /* Create scalar REAL tags (tags 31-60) */
+    for(size_t i = 1; i <= 30; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "Scalar_REAL_%03zu", i);
+        tag_def_t *new_tag = tag_create_real(name, (float)i * 3.14159f);
+        if(new_tag) {
+            if(!server.tags) { server.tags = new_tag; }
+            if(last_tag) { last_tag->next = new_tag; }
+            last_tag = new_tag;
+        }
+    }
+
+    /* Create 1D array DINT tags (tags 61-75) */
+    for(size_t i = 1; i <= 15; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "Array_DINT_%03zu", i);
+        tag_def_t *new_tag = tag_create_dint_array(name, 10 + i);
+        if(new_tag) {
+            int32_t *data = (int32_t *)new_tag->data;
+            for(size_t j = 0; j < new_tag->elem_count; j++) { data[j] = (int32_t)(i * 1000 + j); }
+            if(!server.tags) { server.tags = new_tag; }
+            if(last_tag) { last_tag->next = new_tag; }
+            last_tag = new_tag;
+        }
+    }
+
+    /* Create 2D array DINT tags (tags 76-85) */
+    for(size_t i = 1; i <= 10; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "Array2D_DINT_%03zu", i);
+        size_t dims[2] = {3 + i, 4 + i};
+        tag_def_t *new_tag = tag_create_dint_array_multi(name, 2, dims);
+        if(new_tag) {
+            int32_t *data = (int32_t *)new_tag->data;
+            for(size_t j = 0; j < new_tag->elem_count; j++) { data[j] = (int32_t)(i * 10000 + j); }
+            if(!server.tags) { server.tags = new_tag; }
+            if(last_tag) { last_tag->next = new_tag; }
+            last_tag = new_tag;
+        }
+    }
+
+    /* Create 1D array REAL tags (tags 86-100) */
+    for(size_t i = 1; i <= 15; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "Array_REAL_%03zu", i);
+        tag_def_t *new_tag = tag_create_real_array_multi(name, 1, (size_t[]){5 + i});
+        if(new_tag) {
+            float *data = (float *)new_tag->data;
+            for(size_t j = 0; j < new_tag->elem_count; j++) { data[j] = (float)(i * 100 + j) + 0.5f; }
+            if(!server.tags) { server.tags = new_tag; }
+            if(last_tag) { last_tag->next = new_tag; }
+            last_tag = new_tag;
+        }
+    }
+
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Created 100+ test tags");
 
     pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "PLC Server starting (debug=%s)", debug_str);
 

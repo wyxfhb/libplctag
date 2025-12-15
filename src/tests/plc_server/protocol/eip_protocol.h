@@ -7,6 +7,7 @@
 
 /* Forward declarations */
 typedef struct plc_context_s plc_context_t;
+typedef struct client_context_s client_context_t;
 
 /* ============================================================================
  * EIP Constants

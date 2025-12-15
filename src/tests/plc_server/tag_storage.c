@@ -36,6 +36,12 @@
 #include "tag_storage.h"
 
 /* ============================================================================
+ * Tag Instance ID Counter
+ * ============================================================================ */
+
+static uint32_t next_instance_id = 1; /* Instance IDs start at 1, never 0 */
+
+/* ============================================================================
  * Tag Creation and Destruction
  * ============================================================================ */
 
@@ -47,6 +53,9 @@ tag_def_t* tag_create(const char *name, uint16_t type, size_t elem_size,
     }
 
     memset(tag, 0, sizeof(*tag));
+
+    /* Assign instance ID - this is permanent and unique */
+    tag->instance_id = next_instance_id++;
 
     /* Copy name */
     strncpy(tag->name, name, sizeof(tag->name) - 1);

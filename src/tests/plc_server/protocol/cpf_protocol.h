@@ -29,9 +29,9 @@ typedef struct plc_context_s plc_context_t;
  * Data is stored as pointer + length, not copied.
  */
 typedef struct {
-    uint16_t type_id;    /* Item type (CPF_ITEM_*) */
-    uint16_t length;     /* Length of data */
-    const uint8_t *data; /* Pointer to item data (in input buffer) */
+    uint16_t type_id; /* Item type (CPF_ITEM_*) */
+    uint16_t length;  /* Length of data */
+    uint8_t *data;    /* Pointer to item data (in input buffer) */
 } cpf_item_t;
 
 /**
@@ -63,8 +63,12 @@ util_err_t cpf_parse_packet(buf_t *input, cpf_packet_t *packet);
 /**
  * @brief Dispatch CPF packet through CIP router
  *
- * Extracts CIP message from unconnected data item and routes through
- * the CIP message router. Builds response wrapped in CPF format.
+ * Routes CPF packets to appropriate handler based on item types:
+ * - Unconnected messages: Extracts CIP message from unconnected data item (0x00B2)
+ * - Connected messages: Extracts CIP message from connected data item (0x00B1),
+ *   validates connection ID against server_connection_id, and echoes sequence number
+ *
+ * Builds response wrapped in CPF format with appropriate item types.
  *
  * @param packet Parsed CPF packet
  * @param input Buffer positioned after CPF header (for CIP parsing)
@@ -72,4 +76,4 @@ util_err_t cpf_parse_packet(buf_t *input, cpf_packet_t *packet);
  * @param plc PLC context (passed to CIP router)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t cpf_dispatch(const cpf_packet_t *packet, buf_t *input, buf_t *output, plc_context_t *plc);
+util_err_t cpf_dispatch(cpf_packet_t *packet, buf_t *input, buf_t *output, plc_context_t *plc);

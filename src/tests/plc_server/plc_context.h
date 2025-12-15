@@ -37,6 +37,18 @@ typedef struct plc_context_s {
     tag_def_t *tags;                  /* Tag storage (linked list) */
     omron_registry_t *omron_registry; /* Omron variable/type registry (Phase 6) */
 
+    /* Connection Manager state (will be moved to client_context in full refactoring) */
+    uint32_t client_connection_id;        /* Client connection ID */
+    uint32_t server_connection_id;        /* Server connection ID */
+    uint16_t client_connection_serial;    /* Client connection serial number */
+    uint16_t client_vendor_id;            /* Client vendor ID */
+    uint32_t client_serial_number;        /* Client serial number */
+    uint32_t client_to_server_rpi;        /* Requested RPI */
+    uint32_t server_to_client_rpi;        /* Requested RPI */
+    uint16_t client_to_server_max_packet; /* Max packet size */
+    uint16_t server_to_client_max_packet; /* Max packet size */
+    bool is_forward_open;                 /* Forward Open is active */
+
     /* Will be added in later phases: */
     // server_stats_t stats;             /* Performance statistics */
 } plc_context_t;
@@ -58,7 +70,6 @@ typedef struct listener_info_s {
  * Client Connection Context
  *
  * Per-connection state maintained across coroutine yields.
- * Expanded in later phases.
  */
 typedef struct client_context_s {
     coro_task_handle_t handle; /* Task handle for cleanup */
@@ -70,6 +81,18 @@ typedef struct client_context_s {
     uint8_t send_buffer[4096]; /* Send buffer (static allocation) */
     struct buf_s recv_buf;     /* Receive buffer wrapper */
     struct buf_s send_buf;     /* Send buffer wrapper */
+
+    /* Connection Manager state (per-client) */
+    uint32_t client_connection_id;        /* Client connection ID */
+    uint32_t server_connection_id;        /* Server connection ID */
+    uint16_t client_connection_serial;    /* Client connection serial number */
+    uint16_t client_vendor_id;            /* Client vendor ID */
+    uint32_t client_serial_number;        /* Client serial number */
+    uint32_t client_to_server_rpi;        /* Requested RPI */
+    uint32_t server_to_client_rpi;        /* Requested RPI */
+    uint16_t client_to_server_max_packet; /* Max packet size */
+    uint16_t server_to_client_max_packet; /* Max packet size */
+    bool is_forward_open;                 /* Forward Open is active */
 
     /* Will be added in later phases: */
     // request_timing_t timing;        /* Request timing (for stats) */

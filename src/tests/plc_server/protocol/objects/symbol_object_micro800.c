@@ -258,62 +258,160 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
  * Service 0x55: List Tags
  *
  * Request:
- *   (empty)
+ *   [0-3]  uint32_le  Attributes to get (bit field)
+ *                      0x01 = tag name
+ *                      0x02 = tag type
+ *                      0x04 = tag array info (dimensions)
+ *                      0x07 = all required attributes
+ *   [4-7]  uint32_le  Starting instance ID for pagination (0 = start from beginning)
+ *   [8+]   uint32_le  Maximum size of response (typically 50-100 tags per response)
  *
  * Response:
- *   [0-1]  uint16_le  Tag count
- *   [2+]   Tag list (tag structure repeated)
+ *   Tag list entries (variable count depending on pagination)
+ *   Status code 0x06 in CIP header indicates more data available (partial response)
  *
- * Each tag structure:
- *   [0-1]  uint16_le  Tag type
- *   [2-3]  uint16_le  Tag name length (words)
- *   [4+]   uint8[]    Tag name (padded to word boundary)
+ * Each tag entry:
+ *   [0-3]  uint32_le  Instance ID (unique identifier for this tag, for pagination)
+ *   [4-5]  uint16_le  Symbol type (type code | dimension flags in bits 14-13)
+ *   [6-7]  uint16_le  Element length (size of one element in bytes)
+ *   [8-19] uint32_le  Array dimensions[3] (little-endian, 12 bytes total)
+ *   [20-21] uint16_le String length (tag name length in BYTES, NOT words)
+ *   [22+]  uint8[]    Tag name (no padding, just raw bytes)
  */
 static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
                                            cip_object_instance_t *instance, plc_context_t *plc) {
 
-    (void)path;
     (void)instance;
-    (void)request;
 
-    /* Build response header */
-    cip_build_response(response, service, CIP_STATUS_OK);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: starting list_tags service");
 
-    /* Count tags */
-    size_t tag_count = 0;
+    /* Parse request parameters */
+    uint32_t attributes = 0;
+    uint32_t start_instance = 0;
+    uint32_t max_response = 0;
+
+    /* Note: The path may contain instance_id for pagination */
+    if(path && path->segment_count > 1 &&
+       path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT) {
+        start_instance = path->segments[1].logical.id;
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: pagination instance = %u", start_instance);
+    }
+
+    /* Read optional request parameters if present */
+    if(buf_read_size(request) >= 4) {
+        buf_read_u32_le(request, "attributes", &attributes);
+    } else {
+        attributes = 0x07; /* Default: all attributes */
+    }
+
+    if(buf_read_size(request) >= 4) {
+        buf_read_u32_le(request, "max_response_size", &max_response);
+    } else {
+        max_response = 50; /* Default: 50 tags per response */
+    }
+
+    /* Get negotiated max packet size from Forward Open connection state */
+    uint16_t max_packet_size = plc->server_to_client_max_packet;
+
+    /* Sanity check: if packet size is unreasonably large (> 1000 bytes), use default 504 */
+    if(max_packet_size == 0 || max_packet_size > 1000) {
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: suspicious negotiated packet size=%u, using default 504",
+              max_packet_size);
+        max_packet_size = 504;
+    }
+
+    /* Calculate available space for tag data:
+     * - max_packet_size = 504 bytes (negotiated during Forward Open)
+     * - CPF data item overhead = 4 bytes (type field: 2 + length field: 2)
+     * - Sequence ID = 2 bytes (counted within the 504 bytes)
+     * - CIP response header = 4 bytes
+     * - Available for tag data = 504 - 4 - 2 - 4 = 494 bytes
+     */
+    size_t cpf_overhead = 4;      /* Type (2) + Length (2) */
+    size_t sequence_id_size = 2;  /* Sequence ID within the data item */
+    size_t cip_header_size = 4;   /* CIP response header */
+    size_t max_tag_data = max_packet_size - cpf_overhead - sequence_id_size - cip_header_size;
+
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: using packet size=%u, max_tag_data=%zu",
+          max_packet_size, max_tag_data);
+
+    /* Find starting position for pagination */
     tag_def_t *tag = plc->tags;
+    tag_def_t *start_tag = NULL;
+    size_t total_tags = 0;
+
     while(tag) {
-        tag_count++;
+        if(start_tag == NULL && tag->instance_id >= start_instance) {
+            start_tag = tag;
+        }
+        total_tags++;
         tag = tag->next;
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: found %zu tags", tag_count);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: found %zu total tags, starting from instance %u",
+          total_tags, start_instance);
 
-    /* Write tag count */
+    /* Reserve space for CIP response header (reply service + reserved + status) */
+    buf_t cip_header_buf;
+    if(!buf_reserve_write(response, 4, &cip_header_buf)) {
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags: failed to reserve CIP header space");
+        return buf_get_error(response);
+    }
+
+    /* Write tag entries starting from start_tag, checking space before each */
     bool ok = true;
-    ok &= buf_write_u16_le(response, "tag_count", (uint16_t)tag_count);
+    bool more_data = false;
+    tag = start_tag;
+    size_t entries_written = 0;
+    size_t tag_data_written = 0;
 
-    /* Write each tag */
-    tag = plc->tags;
     while(tag && ok) {
-        /* Write tag type */
-        ok &= buf_write_u16_le(response, "tag_type", tag->tag_type);
-
-        /* Calculate tag name length in words (including padding) */
+        /* Calculate size of this tag entry */
         size_t name_len = strlen(tag->name);
-        size_t name_words = (name_len + 1) / 2; /* +1 for padding */
-        if(name_len % 2 == 0) { name_words = name_len / 2; /* Already word-aligned */ }
+        size_t entry_size = 4 +      /* instance_id */
+                           2 +      /* symbol_type */
+                           2 +      /* element_length */
+                           12 +     /* array dimensions (3 x 4) */
+                           2 +      /* string_length */
+                           name_len; /* tag name */
 
-        /* Write name length in words */
-        ok &= buf_write_u16_le(response, "name_length", (uint16_t)name_words);
+        /* Check if this entry fits in remaining space */
+        if(tag_data_written + entry_size > max_tag_data) {
+            /* Can't fit this tag, we have more data */
+            more_data = true;
+            break;
+        }
 
-        /* Write name with padding */
-        uint8_t padded_name[256];
-        memset(padded_name, 0, sizeof(padded_name));
-        memcpy(padded_name, tag->name, name_len);
-        size_t padded_len = name_words * 2;
-        ok &= buf_write_bytes(response, "name", padded_name, padded_len);
+        /* Instance ID (4 bytes) - use the permanent instance_id assigned at tag creation */
+        ok &= buf_write_u32_le(response, "instance_id", tag->instance_id);
 
+        /* Symbol type with dimension flags (2 bytes) */
+        /* Dimension encoding: bits [14:13] = dimension count - 1 (0-3, for 1-4 dimensions) */
+        uint16_t dim_count_encoded = (uint16_t)((tag->dim_count > 0) ? (tag->dim_count - 1) : 0);
+        if(dim_count_encoded > 3) dim_count_encoded = 3; /* Cap at 3 bits */
+        uint16_t symbol_type = tag->tag_type | (uint16_t)(((dim_count_encoded & 0x3) << 13));
+        ok &= buf_write_u16_le(response, "symbol_type", symbol_type);
+
+        /* Element length in bytes (2 bytes) */
+        ok &= buf_write_u16_le(response, "element_length", (uint16_t)tag->elem_size);
+
+        /* Array dimensions (3 x 4 bytes = 12 bytes total) */
+        for(size_t i = 0; i < 3; i++) {
+            uint32_t dim = (i < tag->dim_count) ? (uint32_t)tag->dimensions[i] : 0;
+            ok &= buf_write_u32_le(response, "array_dim", dim);
+        }
+
+        /* Tag name length in BYTES (2 bytes) */
+        ok &= buf_write_u16_le(response, "string_length", (uint16_t)name_len);
+
+        /* Tag name (no padding, just raw bytes) */
+        ok &= buf_write_bytes(response, "tag_name", (const uint8_t *)tag->name, name_len);
+
+        if(!ok) break;
+
+        /* Update counters for this successful entry */
+        tag_data_written += entry_size;
+        entries_written++;
         tag = tag->next;
     }
 
@@ -322,7 +420,29 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: response built successfully");
+    /* Now fill in the CIP header at the reserved location */
+    uint8_t status_code = more_data ? 0x06 : CIP_STATUS_OK;
+
+    /* CIP response header format:
+     * [0] Reply service (0x55 | 0x80 = 0xD5)
+     * [1] Reserved (0x00)
+     * [2] Extended status size (0x00)
+     * [3] Status code (0x00 for success, 0x06 for more data, etc.)
+     */
+    buf_reset(&cip_header_buf);
+    bool header_ok = true;
+    header_ok &= buf_write_u8(&cip_header_buf, "reply_service", service | 0x80);
+    header_ok &= buf_write_u8(&cip_header_buf, "reserved", 0x00);
+    header_ok &= buf_write_u8(&cip_header_buf, "ext_status_size", 0x00);
+    header_ok &= buf_write_u8(&cip_header_buf, "status_code", status_code);
+
+    if(!header_ok) {
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags: failed to write CIP header");
+        return buf_get_error(&cip_header_buf);
+    }
+
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: sent %zu entries (%zu bytes), status=0x%02X",
+          entries_written, tag_data_written, status_code);
 
     return UTIL_OK;
 }

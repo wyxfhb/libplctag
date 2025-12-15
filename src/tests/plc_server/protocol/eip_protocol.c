@@ -44,6 +44,9 @@
 util_err_t eip_frame_check(buf_t *buf, void *context) {
     (void)context;
 
+    pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "Checking EIP frame");
+    pdlog_bytes(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, buf);
+
     size_t available = buf_read_size(buf);
 
     /* Need at least EIP header (24 bytes) */
@@ -256,7 +259,8 @@ static util_err_t handle_send_data(buf_t *input, buf_t *output, const eip_header
         return UTIL_EINVAL;
     }
 
-    pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "SendData: interface=0x%08X timeout=%u", interface_handle, timeout);
+    const char *msg_type = (req_header->command == EIP_CMD_SEND_RR_DATA) ? "unconnected (RRData)" : "connected (UnitData)";
+    pdlog(LOG_MODULE_EIP_PROTOCOL, LOG_LEVEL_DETAIL, "SendData: %s messaging, interface=0x%08X timeout=%u", msg_type, interface_handle, timeout);
 
     /* Parse CPF packet */
     cpf_packet_t cpf;

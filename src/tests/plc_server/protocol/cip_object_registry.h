@@ -6,6 +6,7 @@
 
 /* Forward declarations */
 typedef struct plc_context_s plc_context_t;
+typedef struct client_context_s client_context_t;
 typedef struct cip_path_s cip_path_t;
 typedef struct cip_object_class_s cip_object_class_t;
 typedef struct cip_object_instance_s cip_object_instance_t;

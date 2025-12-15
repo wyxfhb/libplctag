@@ -128,7 +128,7 @@ static util_err_t variable_type_service_get_attributes_all(uint8_t service, cons
 
         /* Size, type code, array info, reserved */
         ok &= buf_write_u32_le(response, "size", (uint32_t)type_def->total_size);
-        ok &= buf_write_u8(response, "type_code", type_def->type_code);
+        ok &= buf_write_u8(response, "type_code", (uint8_t)(type_def->type_code & 0xFF));
         ok &= buf_write_u8(response, "array_type", 0);
         ok &= buf_write_u8(response, "reserved1", 0);
         ok &= buf_write_u8(response, "reserved2", 0);

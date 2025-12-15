@@ -77,7 +77,8 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words, cip_path_t *pat
 
             /* Logical: Class 16-bit */
             case CIP_SEGMENT_LOGICAL_CLASS_16BIT: {
-                buf_read_u8(input, "padding", NULL); /* Skip padding */
+                uint8_t padding;
+                if(!buf_read_u8(input, "padding", &padding)) { return buf_get_error(input); }
                 uint16_t class_id;
                 if(!buf_read_u16_le(input, "class_id", &class_id)) { return buf_get_error(input); }
                 seg->logical.id = class_id;
@@ -97,7 +98,8 @@ util_err_t cip_parse_path(buf_t *input, uint8_t path_size_words, cip_path_t *pat
 
             /* Logical: Instance 16-bit */
             case CIP_SEGMENT_LOGICAL_INSTANCE_16BIT: {
-                buf_read_u8(input, "padding", NULL); /* Skip padding */
+                uint8_t padding;
+                if(!buf_read_u8(input, "padding", &padding)) { return buf_get_error(input); }
                 uint16_t instance_id;
                 if(!buf_read_u16_le(input, "instance_id", &instance_id)) { return buf_get_error(input); }
                 seg->logical.id = instance_id;

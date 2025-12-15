@@ -35,6 +35,7 @@
 #include "cip_path.h"
 #include "cip_object_registry.h"
 #include "../../utils/log.h"
+#include "../../utils/buf.h"
 #include "plc_context.h"
 
 /* ============================================================================
@@ -115,6 +116,28 @@ util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, plc_context_
         return UTIL_EINVAL;
     }
 
+    /* Check if first segment is a logical class (0x20, 0x21, 0x22) */
+    if(path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_8BIT ||
+       path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_16BIT ||
+       path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_32BIT) {
+
+        uint32_t class_id = path.segments[0].logical.id;
+        uint32_t instance_id = 0;
+
+        /* Check if second segment is a logical instance (0x24, 0x25, 0x26) */
+        if(path.segment_count > 1 &&
+           (path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT ||
+            path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_16BIT ||
+            path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_32BIT)) {
+            instance_id = path.segments[1].logical.id;
+        }
+
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP dispatch: routing to class 0x%02X instance 0x%08X",
+              class_id, instance_id);
+
+        return cip_registry_dispatch(plc->registry, (uint16_t)class_id, instance_id, request.service, &path, input, output, plc);
+    }
+
     if(path.segments[0].type == CIP_SEGMENT_SYMBOLIC) {
         pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP dispatch: routing to Symbol Object (0x6B) for tag '%.*s'",
               (int)path.segments[0].symbolic.length, path.segments[0].symbolic.name);
@@ -124,7 +147,8 @@ util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, plc_context_
     }
 
     /* If we get here, we couldn't route the request */
-    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: couldn't determine target object");
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: couldn't determine target object (segment type 0x%02X)",
+          path.segments[0].type);
     cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
 
     return UTIL_ENOTFOUND;

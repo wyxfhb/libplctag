@@ -122,7 +122,7 @@ static util_err_t variable_service_get_attributes_all(uint8_t service, const cip
 
     bool ok = true;
     ok &= buf_write_u16_le(response, "size", (uint16_t)var->data_size);
-    ok &= buf_write_u8(response, "type_code", var->type_code);
+    ok &= buf_write_u8(response, "type_code", (uint8_t)(var->type_code & 0xFF));
     ok &= buf_write_u8(response, "array_type", var->dim_count > 0 ? 1 : 0);
     ok &= buf_write_u8(response, "dim_count", var->dim_count);
     ok &= buf_write_u8(response, "reserved1", 0);
@@ -231,7 +231,7 @@ static util_err_t variable_service_read_tag(uint8_t service, const cip_path_t *p
     cip_build_response(response, service, CIP_STATUS_OK);
 
     bool ok = true;
-    ok &= buf_write_u8(response, "type_code", var->type_code);
+    ok &= buf_write_u8(response, "type_code", (uint8_t)(var->type_code & 0xFF));
     ok &= buf_write_u8(response, "reserved", 0);
     ok &= buf_write_u16_le(response, "count", (uint16_t)(bytes_to_read));
 

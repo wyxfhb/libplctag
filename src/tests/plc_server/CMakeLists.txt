@@ -13,6 +13,7 @@ add_executable(plc_server
     protocol/objects/symbol_object_micro800.c
     protocol/objects/symbol_object_controllogix.c
     protocol/objects/identity_object.c
+    protocol/objects/connection_manager.c
     protocol/objects/tag_name_server_omron.c
     protocol/objects/variable_object_omron.c
     protocol/objects/variable_type_object_omron.c

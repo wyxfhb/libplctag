@@ -24,6 +24,7 @@
  * Supports multi-dimensional arrays via dimension array.
  */
 typedef struct tag_def_s {
+    uint32_t instance_id;           /* Unique instance ID (assigned at creation time, never 0) */
     char name[256];                 /* Tag name (null-terminated) */
     uint16_t tag_type;              /* CIP type code (CIP_TYPE_*) */
     size_t elem_size;               /* Size of one element in bytes */
