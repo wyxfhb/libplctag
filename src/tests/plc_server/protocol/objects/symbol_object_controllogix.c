@@ -377,17 +377,21 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
 /**
  * Service 0x55: List Tags
  *
- * Request:
- *   (empty)
+ * Response format matches Micro800 - same as client expects in eip_cip_special.c:
+ *   [0-3]   uint32_le  Instance ID
+ *   [4-5]   uint16_le  Symbol type
+ *   [6-7]   uint16_le  Element length (bytes)
+ *   [8-19]  uint32_le  Array dimensions (3 x uint32_le)
+ *   [20-21] uint16_le  String length (name length in bytes)
+ *   [22+]   uint8[]    Tag name (raw bytes, no padding)
  *
- * Response:
- *   [0-1]  uint16_le  Tag count
- *   [2+]   Tag list (tag structure repeated)
+ * NOTE: ControlLogix uses same format as Micro800. The response data
+ * is built by the cpf_protocol dispatcher, which adds the CIP header
+ * and pagination support.
  *
- * Each tag structure:
- *   [0-1]  uint16_le  Tag type
- *   [2-3]  uint16_le  Tag name length (words)
- *   [4+]   uint8[]    Tag name (padded to word boundary)
+ * This implementation returns all tags in a single response. Unlike Micro800,
+ * ControlLogix typically has larger packet sizes and doesn't use pagination
+ * for List Tags service.
  */
 static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
                                            cip_object_instance_t *instance, plc_context_t *plc) {
@@ -399,40 +403,63 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
 
-    /* Count tags */
-    size_t tag_count = 0;
-    tag_def_t *tag = plc->tags;
-    while(tag) {
-        tag_count++;
-        tag = tag->next;
-    }
-
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags (CLogix): found %zu tags", tag_count);
-
-    /* Write tag count */
+    /* Write each tag in the standard format, checking available space before each entry */
     bool ok = true;
-    ok &= buf_write_u16_le(response, "tag_count", (uint16_t)tag_count);
+    tag_def_t *tag = plc->tags;
 
-    /* Write each tag */
-    tag = plc->tags;
     while(tag && ok) {
-        /* Write tag type */
-        ok &= buf_write_u16_le(response, "tag_type", tag->tag_type);
-
-        /* Calculate tag name length in words (including padding) */
+        /* Calculate size of this tag entry */
         size_t name_len = strlen(tag->name);
-        size_t name_words = (name_len + 1) / 2;
-        if(name_len % 2 == 0) { name_words = name_len / 2; }
+        size_t entry_size = 4 +      /* instance_id */
+                           2 +      /* symbol_type */
+                           2 +      /* element_length */
+                           12 +     /* array dimensions (3 x 4) */
+                           2 +      /* string_length */
+                           name_len; /* tag name */
 
-        /* Write name length in words */
-        ok &= buf_write_u16_le(response, "name_length", (uint16_t)name_words);
+        /* Check if this entry fits in the remaining response buffer */
+        size_t available = buf_write_size(response);
+        if(entry_size > available) {
+            pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL,
+                  "List Tags (CLogix): buffer full (%zu bytes needed, %zu available), stopping tag enumeration",
+                  entry_size, available);
+            break;
+        }
 
-        /* Write name with padding */
-        uint8_t padded_name[256];
-        memset(padded_name, 0, sizeof(padded_name));
-        memcpy(padded_name, tag->name, name_len);
-        size_t padded_len = name_words * 2;
-        ok &= buf_write_bytes(response, "name", padded_name, padded_len);
+        /* Instance ID (4 bytes) - use the permanent instance_id assigned at tag creation */
+        ok &= buf_write_u32_le(response, "instance_id", tag->instance_id);
+
+        /* Symbol type with dimension flags (2 bytes) */
+        /* Dimension encoding: bits [14:13] = dimension count - 1 (0-3, for 1-4 dimensions) */
+        uint16_t dim_count_encoded = (uint16_t)((tag->dim_count > 0) ? (tag->dim_count - 1) : 0);
+        if(dim_count_encoded > 3) dim_count_encoded = 3; /* Cap at 3 bits */
+
+        uint16_t symbol_type;
+        if(tag->udt_id != 0) {
+            /* UDT-based tag: set bit 15 (0x8000) and include UDT ID in bits 11-0 */
+            symbol_type = 0x8000 | (uint16_t)(((dim_count_encoded & 0x3) << 13)) | (tag->udt_id & 0x0FFF);
+        } else {
+            /* Built-in type: dimension flags in bits 14-13, type code in lower bits */
+            symbol_type = tag->tag_type | (uint16_t)(((dim_count_encoded & 0x3) << 13));
+        }
+        ok &= buf_write_u16_le(response, "symbol_type", symbol_type);
+
+        /* Element length in bytes (2 bytes) */
+        ok &= buf_write_u16_le(response, "element_length", (uint16_t)tag->elem_size);
+
+        /* Array dimensions (3 x 4 bytes = 12 bytes total) */
+        for(size_t i = 0; i < 3; i++) {
+            uint32_t dim = (i < tag->dim_count) ? (uint32_t)tag->dimensions[i] : 0;
+            ok &= buf_write_u32_le(response, "array_dim", dim);
+        }
+
+        /* Tag name length in BYTES (2 bytes) */
+        ok &= buf_write_u16_le(response, "string_length", (uint16_t)name_len);
+
+        /* Tag name (no padding, just raw bytes) */
+        ok &= buf_write_bytes(response, "tag_name", (const uint8_t *)tag->name, name_len);
+
+        if(!ok) break;
 
         tag = tag->next;
     }

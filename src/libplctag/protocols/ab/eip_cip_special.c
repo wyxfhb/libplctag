@@ -467,8 +467,8 @@ int raw_tag_build_write_request_connected(ab_tag_p tag) {
     required_space = (size_t)tag->size + sizeof(*cip);
 
     if(required_space > (size_t)tag->req->request_capacity) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Amount to write, %zu bytes, exceeds request capacity %d bytes!", required_space,
-               tag->req->request_capacity);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Amount to write, %zu bytes, exceeds request capacity %d bytes!",
+               required_space, tag->req->request_capacity);
         return PLCTAG_ERR_TOO_LARGE;
     }
 
@@ -507,8 +507,8 @@ int raw_tag_build_write_request_connected(ab_tag_p tag) {
     int available_payload = session_get_available_cip_payload_space(tag->session);
 
     if(packet_payload_size > available_payload) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!", packet_payload_size,
-               available_payload);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!",
+               packet_payload_size, available_payload);
         ab_tag_abort_request(tag);
         return PLCTAG_ERR_TOO_LARGE;
     }
@@ -526,7 +526,8 @@ int raw_tag_build_write_request_connected(ab_tag_p tag) {
     rc = session_add_request(tag->session, tag->req);
 
     if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_ERROR, "Unable to add request to session! Error %s", plc_tag_decode_error(rc));
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_ERROR, "Unable to add request to session! Error %s",
+               plc_tag_decode_error(rc));
 
         ab_tag_abort_request(tag);
     }
@@ -558,8 +559,8 @@ int raw_tag_build_write_request_unconnected(ab_tag_p tag) {
     required_space = (size_t)tag->size + sizeof(eip_cip_uc_req) + (size_t)tag->session->conn_path_size;
 
     if(required_space > (size_t)tag->req->request_capacity) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Amount to write, %zu bytes, exceeds request capacity %d bytes!", required_space,
-               tag->req->request_capacity);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Amount to write, %zu bytes, exceeds request capacity %d bytes!",
+               required_space, tag->req->request_capacity);
         return PLCTAG_ERR_TOO_LARGE;
     }
 
@@ -642,8 +643,8 @@ int raw_tag_build_write_request_unconnected(ab_tag_p tag) {
     int available_payload = session_get_available_cip_payload_space(tag->session);
 
     if(packet_payload_size > available_payload) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!", packet_payload_size,
-               available_payload);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!",
+               packet_payload_size, available_payload);
         ab_tag_abort_request(tag);
         return PLCTAG_ERR_TOO_LARGE;
     }
@@ -660,7 +661,8 @@ int raw_tag_build_write_request_unconnected(ab_tag_p tag) {
     /* add the request to the session's list. */
     rc = session_add_request(tag->session, tag->req);
     if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_ERROR, "Unable to add request to session! Error %s", plc_tag_decode_error(rc));
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_ERROR, "Unable to add request to session! Error %s",
+               plc_tag_decode_error(rc));
         ab_tag_abort_request(tag);
         return rc;
     }
@@ -731,7 +733,8 @@ int setup_tag_listing_tag(ab_tag_p tag, const char *name) {
 
                 /* we have a program tag request! */
                 if(cip_encode_tag_name(tag, tag_parts[0]) != PLCTAG_STATUS_OK) {
-                    pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Tag %s program listing is not able to be encoded!", name);
+                    pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Tag %s program listing is not able to be encoded!",
+                           name);
                     rc = PLCTAG_ERR_BAD_PARAM;
                     break;
                 }
@@ -764,7 +767,8 @@ int setup_tag_listing_tag(ab_tag_p tag, const char *name) {
 
         pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_INFO, "Done. Found tag listing tag name %s.", name);
     } else {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Done. Tag %s is not a well-formed tag listing name, error %s.", name, plc_tag_decode_error(rc));
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Done. Tag %s is not a well-formed tag listing name, error %s.", name,
+               plc_tag_decode_error(rc));
     }
 
     return rc;
@@ -824,7 +828,8 @@ int listing_tag_tickler(ab_tag_p tag) {
     if(rc != PLCTAG_STATUS_OK) { return rc; }
 
     if(tag->write_in_progress) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Something started a write on a listing tag.   This is not supported!");
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN,
+               "Something started a write on a listing tag.   This is not supported!");
 
         ab_tag_abort_request(tag);
 
@@ -892,7 +897,8 @@ int listing_tag_check_read_status_connected(ab_tag_p tag) {
         ptrdiff_t payload_size = (data_end - data);
 
         if(cip_resp->reply_service != (AB_EIP_CMD_CIP_LIST_TAGS | AB_EIP_CMD_CIP_OK)) {
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "CIP response reply service unexpected: %d", cip_resp->reply_service);
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "CIP response reply service unexpected: %d",
+                   cip_resp->reply_service);
             rc = PLCTAG_ERR_BAD_DATA;
             break;
         }
@@ -916,8 +922,8 @@ int listing_tag_check_read_status_connected(ab_tag_p tag) {
             uint8_t *current_entry_data = data;
             int new_size = (int)payload_size + tag->offset;
 
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Received %d bytes of tag list data.  Partial: %s", (int)payload_size,
-                   partial_data ? "yes" : "no");
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Received %d bytes of tag list data.  Partial: %s",
+                   (int)payload_size, partial_data ? "yes" : "no");
             pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "new size: %d", new_size);
             pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "current tag size: %d", tag->size);
             pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "current offset: %d", tag->offset);
@@ -977,7 +983,8 @@ int listing_tag_check_read_status_connected(ab_tag_p tag) {
         /* keep going if we are not done yet. */
         if(partial_data) {
             /* call read start again to get the next piece */
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "calling listing_tag_build_read_request_connected() to get the next chunk.");
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL,
+                   "calling listing_tag_build_read_request_connected() to get the next chunk.");
             rc = listing_tag_build_read_request_connected(tag);
         } else {
             /* done! */
@@ -1130,8 +1137,8 @@ int listing_tag_build_read_request_connected(ab_tag_p tag) {
     int available_payload = session_get_available_cip_payload_space(tag->session);
 
     if(packet_payload_size > available_payload) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!", packet_payload_size,
-               available_payload);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!",
+               packet_payload_size, available_payload);
         ab_tag_abort_request(tag);
         return PLCTAG_ERR_TOO_LARGE;
     }
@@ -1332,7 +1339,8 @@ int udt_tag_check_read_metadata_status_connected(ab_tag_p tag) {
         ptrdiff_t payload_size = (data_end - data);
 
         if(cip_resp->reply_service != (AB_EIP_CMD_CIP_GET_ATTR_LIST | AB_EIP_CMD_CIP_OK)) {
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "CIP response reply service unexpected: %d", cip_resp->reply_service);
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "CIP response reply service unexpected: %d",
+                   cip_resp->reply_service);
             rc = PLCTAG_ERR_BAD_DATA;
             break;
         }
@@ -1374,7 +1382,8 @@ int udt_tag_check_read_metadata_status_connected(ab_tag_p tag) {
              * 12-13   16-bit UDT handle/type.
              */
 
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Increasing tag buffer size to %d bytes.", new_size); /* MAGIC */
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Increasing tag buffer size to %d bytes.",
+                   new_size); /* MAGIC */
 
             new_buffer = (uint8_t *)mem_realloc(tag->data, new_size);
             if(!new_buffer) {
@@ -1400,10 +1409,10 @@ int udt_tag_check_read_metadata_status_connected(ab_tag_p tag) {
             /* copy in the UDT instance size in bytes */
             mem_copy(tag->data + 6, payload + 14, (int)(unsigned int)(sizeof(tmp_u32)));
 
-            /* copy in the UDT number of members */
+            /* copy in the UDT number of members, fields  */
             mem_copy(tag->data + 10, payload + 22, (int)(unsigned int)(sizeof(tmp_u16)));
 
-            /* copy in the UDT number of members */
+            /* copy in the UDT handle/type */
             mem_copy(tag->data + 12, payload + 28, (int)(unsigned int)(sizeof(tmp_u16)));
 
             pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "current size %d", tag->size);
@@ -1424,7 +1433,8 @@ int udt_tag_check_read_metadata_status_connected(ab_tag_p tag) {
         /* keep going if we are not done yet. */
         if(partial_data) {
             /* call read start again to try again.  The data returned might be zero bytes if this is a packed result */
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "calling udt_tag_build_read_metadata_request_connected() to try again.");
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL,
+                   "calling udt_tag_build_read_metadata_request_connected() to try again.");
             rc = udt_tag_build_read_metadata_request_connected(tag);
         } else {
             /* done! */
@@ -1434,7 +1444,8 @@ int udt_tag_check_read_metadata_status_connected(ab_tag_p tag) {
             tag->offset = 0;
             tag->udt_get_fields = 1;
 
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "calling udt_tag_build_read_fields_request_connected() to get field data.");
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL,
+                   "calling udt_tag_build_read_fields_request_connected() to get field data.");
             rc = udt_tag_build_read_fields_request_connected(tag);
 
             /* an OK from the builder means that we need to return PENDING because we just queued the new request*/
@@ -1570,8 +1581,8 @@ int udt_tag_build_read_metadata_request_connected(ab_tag_p tag) {
     int available_payload = session_get_available_cip_payload_space(tag->session);
 
     if(packet_payload_size > available_payload) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!", packet_payload_size,
-               available_payload);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!",
+               packet_payload_size, available_payload);
         ab_tag_abort_request(tag);
         return PLCTAG_ERR_TOO_LARGE;
     }
@@ -1635,7 +1646,8 @@ int udt_tag_check_read_fields_status_connected(ab_tag_p tag) {
         ptrdiff_t payload_size = (data_end - data);
 
         if(cip_resp->reply_service != (AB_EIP_CMD_CIP_READ | AB_EIP_CMD_CIP_OK)) {
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "CIP response reply service unexpected: %d", cip_resp->reply_service);
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "CIP response reply service unexpected: %d",
+                   cip_resp->reply_service);
             rc = PLCTAG_ERR_BAD_DATA;
             break;
         }
@@ -1677,8 +1689,8 @@ int udt_tag_check_read_fields_status_connected(ab_tag_p tag) {
 
             tag->offset += (int)payload_size;
 
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "payload of %d (%x) bytes resulting in current offset %d", (int)payload_size, (int)payload_size,
-                   tag->offset);
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "payload of %d (%x) bytes resulting in current offset %d",
+                   (int)payload_size, (int)payload_size, tag->offset);
         } else {
             pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Response returned no data and no error.");
         }
@@ -1692,7 +1704,8 @@ int udt_tag_check_read_fields_status_connected(ab_tag_p tag) {
         /* keep going if we are not done yet. */
         if(partial_data) {
             /* call read start again to try again.  The data returned might be zero bytes if this is a packed result */
-            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "calling udt_tag_build_read_metadata_request_connected() to try again.");
+            pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL,
+                   "calling udt_tag_build_read_metadata_request_connected() to try again.");
             rc = udt_tag_build_read_fields_request_connected(tag);
 
             /* if we get OK, we need to return PENDING for the new request. */
@@ -1753,8 +1766,8 @@ int udt_tag_build_read_fields_request_connected(ab_tag_p tag) {
     mem_copy(&tmp_u32, tag->data + 2, (int)(unsigned int)(sizeof(tmp_u32)));
     total_size = (4 * le2h32(tmp_u32)) - 23; /* formula according to the docs. */
 
-    pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Calculating total size of request, %d to %d.", (int)(unsigned int)total_size,
-           (int)(unsigned int)((total_size + (uint32_t)3) & (uint32_t)neg_4));
+    pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Calculating total size of request, %d to %d.",
+           (int)(unsigned int)total_size, (int)(unsigned int)((total_size + (uint32_t)3) & (uint32_t)neg_4));
 
     /* make the total size a multiple of 4 bytes.  Round up. */
     total_size = (total_size + 3) & (uint32_t)neg_4;
@@ -1806,8 +1819,8 @@ int udt_tag_build_read_fields_request_connected(ab_tag_p tag) {
     data += sizeof(tmp_u32);
 
     /* set the total size */
-    pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Total size %d less offset %d gives %d bytes for the request.", total_size, tag->offset,
-           ((int)(unsigned int)total_size - tag->offset));
+    pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_DETAIL, "Total size %d less offset %d gives %d bytes for the request.",
+           total_size, tag->offset, ((int)(unsigned int)total_size - tag->offset));
     tmp_u16 = h2le16((uint16_t)(total_size - (uint16_t)(unsigned int)tag->offset));
     mem_copy(data, &tmp_u16, (int)(unsigned int)sizeof(tmp_u16));
     data += sizeof(tmp_u16);
@@ -1832,8 +1845,8 @@ int udt_tag_build_read_fields_request_connected(ab_tag_p tag) {
     int available_payload = session_get_available_cip_payload_space(tag->session);
 
     if(packet_payload_size > available_payload) {
-        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!", packet_payload_size,
-               available_payload);
+        pdebug(DEBUG_MODULE_AB_EIP_CIP_SPECIAL, DEBUG_WARN, "Request payload (%d bytes) exceeds available space (%d bytes)!",
+               packet_payload_size, available_payload);
         ab_tag_abort_request(tag);
         return PLCTAG_ERR_TOO_LARGE;
     }

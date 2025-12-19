@@ -144,8 +144,54 @@ static util_err_t connection_manager_forward_open(uint8_t service, const cip_pat
     }
 
     pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL,
-          "Forward Open: originator_vendor=0x%04X originator_serial=0x%08X conn_serial=0x%04X",
-          originator_vendor, originator_serial, conn_serial);
+          "Forward Open: originator_vendor=0x%04X originator_serial=0x%08X conn_serial=0x%04X path_size=%u",
+          originator_vendor, originator_serial, conn_serial, path_size);
+
+    /* Read and validate connection path based on PLC type */
+    uint8_t connection_path[32] = {0};
+    size_t connection_path_len = path_size * 2;  /* Path size is in words (2-byte units) */
+
+    if(connection_path_len > 0) {
+        if(!buf_read_bytes(request, "connection_path", connection_path, connection_path_len)) {
+            pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN, "Forward Open: failed to read connection path");
+            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            return buf_get_error(request);
+        }
+    }
+
+    /* Validate path based on PLC type */
+    if(plc->plc_type == PLC_TYPE_CONTROLLOGIX) {
+        /* ControlLogix REQUIRES a path that matches the server's configured path */
+        if(connection_path_len == 0) {
+            pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN, "Forward Open: ControlLogix requires a path, but none provided");
+            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            return UTIL_ENOTFOUND;
+        }
+
+        /* The path may include routing info beyond the backplane/slot.
+         * We only validate the first bytes match our configured path.
+         * Format: [backplane, slot, optional_routing...] */
+        if(connection_path_len < plc->path_len || memcmp(connection_path, plc->path, plc->path_len) != 0) {
+            pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN,
+                  "Forward Open: path mismatch - got bytes 0x%02X 0x%02X (expected 0x%02X 0x%02X)",
+                  (connection_path_len > 0) ? connection_path[0] : 0xFF,
+                  (connection_path_len > 1) ? connection_path[1] : 0xFF,
+                  plc->path[0], plc->path[1]);
+            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            return UTIL_ENOTFOUND;
+        }
+        pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open: ControlLogix path validation passed (0x%02X 0x%02X matches)",
+              plc->path[0], plc->path[1]);
+    } else {
+        /* Micro800, PLC/5, SLC, etc. MUST NOT have a path */
+        if(connection_path_len > 0) {
+            pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN, "Forward Open: %s does not accept paths, but got %zu bytes",
+                  (plc->plc_type == PLC_TYPE_MICRO800) ? "Micro800" : "PLC", connection_path_len);
+            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            return UTIL_ENOTFOUND;
+        }
+        pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open: path validation passed (no path required)");
+    }
 
     /* Generate server connection ID (non-zero) */
     uint32_t server_conn_id = (uint32_t)time(NULL);

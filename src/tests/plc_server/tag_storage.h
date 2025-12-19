@@ -26,7 +26,8 @@
 typedef struct tag_def_s {
     uint32_t instance_id;           /* Unique instance ID (assigned at creation time, never 0) */
     char name[256];                 /* Tag name (null-terminated) */
-    uint16_t tag_type;              /* CIP type code (CIP_TYPE_*) */
+    uint16_t tag_type;              /* CIP type code (CIP_TYPE_*) or UDT ID if udt_id != 0 */
+    uint16_t udt_id;                /* UDT ID if tag is UDT-based (0 = built-in type) */
     size_t elem_size;               /* Size of one element in bytes */
     size_t elem_count;              /* Total elements (product of dimensions) */
     uint8_t *data;                  /* Tag data (allocated with malloc) */

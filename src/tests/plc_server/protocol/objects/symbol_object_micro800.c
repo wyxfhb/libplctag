@@ -392,7 +392,15 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
         /* Dimension encoding: bits [14:13] = dimension count - 1 (0-3, for 1-4 dimensions) */
         uint16_t dim_count_encoded = (uint16_t)((tag->dim_count > 0) ? (tag->dim_count - 1) : 0);
         if(dim_count_encoded > 3) dim_count_encoded = 3; /* Cap at 3 bits */
-        uint16_t symbol_type = tag->tag_type | (uint16_t)(((dim_count_encoded & 0x3) << 13));
+
+        uint16_t symbol_type;
+        if(tag->udt_id != 0) {
+            /* UDT-based tag: set bit 15 (0x8000) and include UDT ID in bits 11-0 */
+            symbol_type = 0x8000 | (uint16_t)(((dim_count_encoded & 0x3) << 13)) | (tag->udt_id & 0x0FFF);
+        } else {
+            /* Built-in type: dimension flags in bits 14-13, type code in lower bits */
+            symbol_type = tag->tag_type | (uint16_t)(((dim_count_encoded & 0x3) << 13));
+        }
         ok &= buf_write_u16_le(response, "symbol_type", symbol_type);
 
         /* Element length in bytes (2 bytes) */

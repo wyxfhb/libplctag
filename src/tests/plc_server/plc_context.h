@@ -10,6 +10,7 @@
 /* Forward declarations */
 typedef struct tag_def_s tag_def_t;
 typedef struct omron_registry_s omron_registry_t;
+typedef struct udt_def_s udt_def_t;
 
 /* Log module for PLC server (will be defined in log_modules.def) */
 // #define LOG_MODULE_PLC_SERVER (1ULL << 14)
@@ -24,6 +25,17 @@ typedef struct omron_registry_s omron_registry_t;
 // #define LOG_MODULE_OMRON_TYPE_OBJECT (1ULL << 23)
 
 /**
+ * PLC Type Enumeration
+ */
+typedef enum {
+    PLC_TYPE_MICRO800 = 0,
+    PLC_TYPE_CONTROLLOGIX = 1,
+    PLC_TYPE_PLC5 = 2,
+    PLC_TYPE_SLC = 3,
+    PLC_TYPE_OMRON = 4,
+} plc_type_t;
+
+/**
  * PLC Server Context
  *
  * Represents the running PLC server and its state.
@@ -33,8 +45,10 @@ typedef struct plc_context_s {
     volatile int running;  /* Shutdown flag */
     int64_t start_time_us; /* Server start time (for uptime) */
 
+    plc_type_t plc_type;                /* PLC type for this server */
     cip_object_registry_t *registry;  /* CIP object registry */
     tag_def_t *tags;                  /* Tag storage (linked list) */
+    udt_def_t *udts;                  /* UDT definitions (linked list) */
     omron_registry_t *omron_registry; /* Omron variable/type registry (Phase 6) */
 
     /* Connection Manager state (will be moved to client_context in full refactoring) */
@@ -48,6 +62,10 @@ typedef struct plc_context_s {
     uint16_t client_to_server_max_packet; /* Max packet size */
     uint16_t server_to_client_max_packet; /* Max packet size */
     bool is_forward_open;                 /* Forward Open is active */
+
+    /* PLC Path Configuration (for ControlLogix and other PLCs requiring paths) */
+    uint8_t path[32];                     /* Device path (backplane/slot in CIP format) */
+    size_t path_len;                      /* Length of path in bytes */
 
     /* Will be added in later phases: */
     // server_stats_t stats;             /* Performance statistics */
@@ -77,8 +95,8 @@ typedef struct client_context_s {
     eip_session_t session;     /* EIP session state */
 
     /* I/O Buffers */
-    uint8_t recv_buffer[4096]; /* Receive buffer (static allocation) */
-    uint8_t send_buffer[4096]; /* Send buffer (static allocation) */
+    uint8_t recv_buffer[8192]; /* Receive buffer (static allocation) - sized for ControlLogix 4000+ byte packets */
+    uint8_t send_buffer[8192]; /* Send buffer (static allocation) - sized for ControlLogix 4000+ byte packets */
     struct buf_s recv_buf;     /* Receive buffer wrapper */
     struct buf_s send_buf;     /* Send buffer wrapper */
 

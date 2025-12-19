@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.10)
 add_executable(plc_server
     plc_server.c
     tag_storage.c
+    udt_storage.c
     omron_storage.c
     protocol/eip_protocol.c
     protocol/cpf_protocol.c
@@ -12,6 +13,7 @@ add_executable(plc_server
     protocol/cip_object_registry.c
     protocol/objects/symbol_object_micro800.c
     protocol/objects/symbol_object_controllogix.c
+    protocol/objects/udt_object_controllogix.c
     protocol/objects/identity_object.c
     protocol/objects/connection_manager.c
     protocol/objects/tag_name_server_omron.c
