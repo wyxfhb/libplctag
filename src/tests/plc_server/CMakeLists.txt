@@ -11,9 +11,8 @@ add_executable(plc_server
     protocol/cip_message_router.c
     protocol/cip_path.c
     protocol/cip_object_registry.c
-    protocol/objects/symbol_object_micro800.c
-    protocol/objects/symbol_object_controllogix.c
-    protocol/objects/udt_object_controllogix.c
+    protocol/objects/symbol_object.c
+    protocol/objects/udt_object.c
     protocol/objects/identity_object.c
     protocol/objects/connection_manager.c
     protocol/objects/tag_name_server_omron.c

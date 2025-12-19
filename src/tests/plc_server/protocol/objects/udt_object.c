@@ -11,7 +11,7 @@
  *   This Source Code Form is subject to the terms of the Mozilla Public   *
  *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
  *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
- *
+ *                                                                         *
  *                                                                         *
  * LGPL 2:                                                                 *
  *                                                                         *
@@ -33,7 +33,7 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "udt_object_controllogix.h"
+#include "udt_object.h"
 #include "../cip_message_router.h"
 #include "../cip_path.h"
 #include "../../plc_context.h"
@@ -80,7 +80,7 @@ static util_err_t udt_service_get_attribute_list(uint8_t service, const cip_path
         }
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Get Attribute List (CLogix): UDT ID=%u", udt_id);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Get Attribute List: UDT ID=%u", udt_id);
 
     /* Find the UDT by ID */
     udt_def_t *udt = NULL;
@@ -92,7 +92,7 @@ static util_err_t udt_service_get_attribute_list(uint8_t service, const cip_path
     }
 
     if (!udt) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List (CLogix): UDT ID=%u not found", udt_id);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List: UDT ID=%u not found", udt_id);
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
@@ -100,13 +100,13 @@ static util_err_t udt_service_get_attribute_list(uint8_t service, const cip_path
     /* Parse request to see which attributes are requested */
     uint16_t num_attrs = 0;
     if (!buf_read_u16_le(request, "num_attributes", &num_attrs)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List (CLogix): failed to read num_attributes");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List: failed to read num_attributes");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     if (num_attrs == 0 || num_attrs > 10) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List (CLogix): invalid num_attributes=%u", num_attrs);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List: invalid num_attributes=%u", num_attrs);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
@@ -114,7 +114,7 @@ static util_err_t udt_service_get_attribute_list(uint8_t service, const cip_path
     /* Build response header */
     util_err_t err = cip_build_response(response, service, CIP_STATUS_OK);
     if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Get Attribute List (CLogix): failed to build response header");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Get Attribute List: failed to build response header");
         return err;
     }
 
@@ -122,16 +122,21 @@ static util_err_t udt_service_get_attribute_list(uint8_t service, const cip_path
     uint16_t attr_ids[10];
     for (uint16_t i = 0; i < num_attrs; i++) {
         if (!buf_read_u16_le(request, "attribute_id", &attr_ids[i])) {
-            pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List (CLogix): failed to read attribute_id[%u]", i);
+            pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List: failed to read attribute_id[%u]", i);
             cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
             return UTIL_EIO;
         }
     }
 
-    /* Pre-calculate attribute values */
+    /* Pre-calculate attribute values - must match calculate_template_size_words() */
     size_t def_bytes = 0;
+    /* Field descriptors: 8 bytes each */
+    def_bytes += udt->member_count * 8;
+    /* UDT name + null terminator */
+    def_bytes += strlen(udt->name) + 1;
+    /* Field names + null terminators */
     for (size_t j = 0; j < udt->member_count; j++) {
-        def_bytes += 14 + strlen(udt->members[j].name);
+        def_bytes += strlen(udt->members[j].name) + 1;
     }
     uint32_t def_words = (uint32_t)((def_bytes + 3) / 4);
     uint32_t instance_size = (uint32_t)udt->total_size;
@@ -184,17 +189,17 @@ static util_err_t udt_service_get_attribute_list(uint8_t service, const cip_path
             default: /* Unsupported attribute */
                 ok &= buf_write_u16_le(response, "attr_status", CIP_STATUS_INVALID_ATTRIBUTE);
                 /* No value written for error status */
-                pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List (CLogix): unsupported attribute 0x%04x", attr_id);
+                pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Get Attribute List: unsupported attribute 0x%04x", attr_id);
                 break;
         }
     }
 
     if (!ok) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Get Attribute List (CLogix): failed to write response data");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Get Attribute List: failed to write response data");
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Get Attribute List (CLogix): returned %u attributes for UDT '%s' (ID=%u, members=%u, def_size=%u words, instance_size=%u bytes)",
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Get Attribute List: returned %u attributes for UDT '%s' (ID=%u, members=%u, def_size=%u words, instance_size=%u bytes)",
           num_attrs, udt->name, udt->udt_id, num_members, def_words, instance_size);
 
     return UTIL_OK;
@@ -270,24 +275,24 @@ static util_err_t udt_service_read_template(uint8_t service, const cip_path_t *p
         }
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Read Template (CLogix): UDT ID=%u", udt_id);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Read Template: UDT ID=%u", udt_id);
 
     /* Parse request parameters */
     uint32_t byte_offset = 0;
     uint16_t request_size = 0;
     if (!buf_read_u32_le(request, "byte_offset", &byte_offset)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template (CLogix): failed to read byte_offset");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template: failed to read byte_offset");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
     if (!buf_read_u16_le(request, "request_size", &request_size)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template (CLogix): failed to read request_size");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template: failed to read request_size");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     if (byte_offset != 0) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template (CLogix): non-zero byte_offset %u", byte_offset);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template: non-zero byte_offset %u", byte_offset);
         /* Continue anyway - client may request partial template */
     }
 
@@ -301,7 +306,7 @@ static util_err_t udt_service_read_template(uint8_t service, const cip_path_t *p
     }
 
     if (!udt) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template (CLogix): UDT ID=%u not found", udt_id);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Template: UDT ID=%u not found", udt_id);
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
@@ -309,23 +314,13 @@ static util_err_t udt_service_read_template(uint8_t service, const cip_path_t *p
     /* Build response header */
     util_err_t err = cip_build_response(response, service, CIP_STATUS_OK);
     if (err != UTIL_OK) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Template (CLogix): failed to build response header");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Template: failed to build response header");
         return err;
     }
 
     bool ok = true;
 
-    /* Calculate template size in words */
-    uint32_t desc_size_words = calculate_template_size_words(udt);
-
-    /* Write UDT template header (14 bytes total) */
-    ok &= buf_write_u16_le(response, "udt_id", (uint16_t)udt->udt_id);
-    ok &= buf_write_u32_le(response, "member_desc_size", desc_size_words);
-    ok &= buf_write_u32_le(response, "instance_size", (uint32_t)udt->total_size);
-    ok &= buf_write_u16_le(response, "num_members", (uint16_t)udt->member_count);
-    ok &= buf_write_u16_le(response, "structure_handle", (uint16_t)udt->udt_id);
-
-    /* Write field descriptors (8 bytes each) */
+    /* Write field descriptors (8 bytes each) - start immediately after CIP header */
     for (size_t i = 0; i < udt->member_count && ok; i++) {
         udt_member_t *member = &udt->members[i];
 
@@ -360,12 +355,12 @@ static util_err_t udt_service_read_template(uint8_t service, const cip_path_t *p
     }
 
     if (!ok) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Template (CLogix): failed to write response data");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Template: failed to write response data");
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Read Template (CLogix): returned template for UDT '%s' (ID=%u, %zu members, %u words desc)",
-          udt->name, udt->udt_id, udt->member_count, desc_size_words);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Read Template: returned template for UDT '%s' (ID=%u, %zu members)",
+          udt->name, udt->udt_id, udt->member_count);
 
     return UTIL_OK;
 }
@@ -403,8 +398,9 @@ static cip_object_instance_t *udt_get_instance(uint32_t instance_id, plc_context
 
 /**
  * Register UDT Definition Object (Class 0x6C) with CIP registry
+ * Supports both ControlLogix and Micro800 PLC types.
  */
-int udt_object_controllogix_register(cip_object_registry_t *registry, plc_context_t *plc) {
+int udt_object_register(cip_object_registry_t *registry, plc_context_t *plc) {
     if (!registry || !plc) {
         return -1;
     }
@@ -416,7 +412,7 @@ int udt_object_controllogix_register(cip_object_registry_t *registry, plc_contex
     }
 
     cls->class_id = 0x6C;      /* UDT Definition Object */
-    cls->class_name = "UDT Definition Object (ControlLogix)";
+    cls->class_name = "UDT Definition Object";
 
     /* Register service handlers */
     cls->service_handlers[0x03] = udt_service_get_attribute_list;  /* Get Attribute List */

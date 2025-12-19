@@ -33,7 +33,7 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "symbol_object_controllogix.h"
+#include "symbol_object.h"
 #include "../cip_path.h"
 #include "../cip_message_router.h"
 #include "../../tag_storage.h"
@@ -63,45 +63,44 @@ static util_err_t symbol_service_read_tag(uint8_t service, const cip_path_t *pat
     /* Parse request: element count */
     uint16_t element_count = 0;
     if(!buf_read_u16_le(request, "element_count", &element_count)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag (CLogix): failed to read element count");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag: failed to read element count");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     if(element_count == 0) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag (CLogix): element count is 0");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag: element count is 0");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     /* Find tag by name from path */
     if(path->segments[0].type != CIP_SEGMENT_SYMBOLIC) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag (CLogix): no symbolic segment in path");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag: no symbolic segment in path");
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
 
     /* Create null-terminated tag name for lookup */
-    char tag_name[256] = {0};
+    char tag_name[256];
     size_t name_len = path->segments[0].symbolic.length;
     if(name_len >= sizeof(tag_name)) { name_len = sizeof(tag_name) - 1; }
     memcpy(tag_name, path->segments[0].symbolic.name, name_len);
-    tag_name[name_len] = '\0'; /* not needed because of the {0} above? */
+    tag_name[name_len] = '\0';
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag (CLogix): looking up '%s' (element_count=%u)", tag_name,
-          element_count);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: looking up '%s' (element_count=%u)", tag_name, element_count);
 
     /* Look up tag */
     tag_def_t *tag = tag_find_by_name(plc->tags, tag_name);
     if(!tag) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag (CLogix): tag '%s' not found", tag_name);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag: tag '%s' not found", tag_name);
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
 
     /* Validate element count */
     if(element_count > tag->elem_count) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag (CLogix): requested %u elements but tag has %zu", element_count,
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag: requested %u elements but tag has %zu", element_count,
               tag->elem_count);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
@@ -118,9 +117,8 @@ static util_err_t symbol_service_read_tag(uint8_t service, const cip_path_t *pat
 
     /* Check if we have space in response buffer */
     if(buf_write_size(response) < bytes_to_read) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN,
-              "Read Tag (CLogix): response buffer too small (%zu needed, %zu available)", bytes_to_read,
-              buf_write_size(response));
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag: response buffer too small (%zu needed, %zu available)",
+              bytes_to_read, buf_write_size(response));
         /* Truncate to what fits */
         bytes_to_read = buf_write_size(response);
     }
@@ -129,11 +127,11 @@ static util_err_t symbol_service_read_tag(uint8_t service, const cip_path_t *pat
     ok &= buf_write_bytes(response, "data", tag->data, bytes_to_read);
 
     if(!ok) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Tag (CLogix): failed to write response");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Tag: failed to write response");
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag (CLogix): success - tag '%s' type=0x%04X bytes=%zu", tag_name,
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: success - tag '%s' type=0x%04X bytes=%zu", tag_name,
           tag->tag_type, bytes_to_read);
 
     return UTIL_OK;
@@ -161,20 +159,20 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
     /* Parse request: element count */
     uint16_t element_count = 0;
     if(!buf_read_u16_le(request, "element_count", &element_count)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): failed to read element count");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: failed to read element count");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     if(element_count == 0) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): element count is 0");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: element count is 0");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     /* Find tag by name from path */
     if(path->segments[0].type != CIP_SEGMENT_SYMBOLIC) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): no symbolic segment in path");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: no symbolic segment in path");
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
@@ -189,25 +187,25 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
     /* Read tag type from request */
     uint16_t tag_type = 0;
     if(!buf_read_u16_le(request, "tag_type", &tag_type)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): failed to read tag type");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: failed to read tag type");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Write Tag (CLogix): looking up '%s' (element_count=%u, type=0x%04X)",
-          tag_name, element_count, tag_type);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Write Tag: looking up '%s' (element_count=%u, type=0x%04X)", tag_name,
+          element_count, tag_type);
 
     /* Look up tag */
     tag_def_t *tag = tag_find_by_name(plc->tags, tag_name);
     if(!tag) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): tag '%s' not found", tag_name);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: tag '%s' not found", tag_name);
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
 
     /* Validate tag type matches */
     if(tag->tag_type != tag_type) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): tag type mismatch (expected 0x%04X, got 0x%04X)",
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: tag type mismatch (expected 0x%04X, got 0x%04X)",
               tag->tag_type, tag_type);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
@@ -215,8 +213,8 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
 
     /* Validate element count */
     if(element_count > tag->elem_count) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): requested %u elements but tag has %zu",
-              element_count, tag->elem_count);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: requested %u elements but tag has %zu", element_count,
+              tag->elem_count);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
@@ -227,7 +225,7 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
     /* Check if request has enough data */
     size_t remaining = buf_read_size(request);
     if(remaining < bytes_to_write) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag (CLogix): insufficient data (%zu needed, %zu available)",
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Write Tag: insufficient data (%zu needed, %zu available)",
               bytes_to_write, remaining);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
@@ -238,7 +236,7 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
     ok &= buf_read_bytes(request, "data", tag->data, bytes_to_write);
 
     if(!ok) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Write Tag (CLogix): failed to read data from request");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Write Tag: failed to read data from request");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return buf_get_error(request);
     }
@@ -246,7 +244,7 @@ static util_err_t symbol_service_write_tag(uint8_t service, const cip_path_t *pa
     /* Build response */
     cip_build_response(response, service, CIP_STATUS_OK);
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Write Tag (CLogix): success - tag '%s' type=0x%04X bytes=%zu", tag_name,
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Write Tag: success - tag '%s' type=0x%04X bytes=%zu", tag_name,
           tag->tag_type, bytes_to_write);
 
     return UTIL_OK;
@@ -278,26 +276,26 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
     uint16_t element_count = 0;
     uint16_t offset = 0;
     if(!buf_read_u16_le(request, "element_count", &element_count)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented (CLogix): failed to read element count");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented: failed to read element count");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     if(!buf_read_u16_le(request, "offset", &offset)) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented (CLogix): failed to read offset");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented: failed to read offset");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     if(element_count == 0) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented (CLogix): element count is 0");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented: element count is 0");
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     /* Find tag by name from path */
     if(path->segments[0].type != CIP_SEGMENT_SYMBOLIC) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented (CLogix): no symbolic segment in path");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented: no symbolic segment in path");
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
@@ -309,20 +307,20 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
     memcpy(tag_name, path->segments[0].symbolic.name, name_len);
     tag_name[name_len] = '\0';
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag Fragmented (CLogix): looking up '%s' (count=%u, offset=%u)",
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag Fragmented: looking up '%s' (count=%u, offset=%u)",
           tag_name, element_count, offset);
 
     /* Look up tag */
     tag_def_t *tag = tag_find_by_name(plc->tags, tag_name);
     if(!tag) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented (CLogix): tag '%s' not found", tag_name);
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented: tag '%s' not found", tag_name);
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
 
     /* Validate offset */
     if(offset >= tag->elem_count) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented (CLogix): offset %u >= tag size %zu", offset,
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN, "Read Tag Fragmented: offset %u >= tag size %zu", offset,
               tag->elem_count);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
@@ -332,7 +330,7 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
     size_t available = tag->elem_count - offset;
     if(element_count > available) {
         element_count = (uint16_t)available;
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag Fragmented (CLogix): truncating to %u elements",
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "Read Tag Fragmented: truncating to %u elements",
               element_count);
     }
 
@@ -349,7 +347,7 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
     /* Check if we have space in response buffer */
     if(buf_write_size(response) < bytes_to_read) {
         pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_WARN,
-              "Read Tag Fragmented (CLogix): response buffer too small (%zu needed, %zu available)", bytes_to_read,
+              "Read Tag Fragmented: response buffer too small (%zu needed, %zu available)", bytes_to_read,
               buf_write_size(response));
         bytes_to_read = buf_write_size(response);
     }
@@ -359,12 +357,12 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
     ok &= buf_write_bytes(response, "data", data_ptr, bytes_to_read);
 
     if(!ok) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Tag Fragmented (CLogix): failed to write response");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "Read Tag Fragmented: failed to write response");
         return buf_get_error(response);
     }
 
     pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL,
-          "Read Tag Fragmented (CLogix): success - tag '%s' type=0x%04X bytes=%zu offset=%u", tag_name, tag->tag_type,
+          "Read Tag Fragmented: success - tag '%s' type=0x%04X bytes=%zu offset=%u", tag_name, tag->tag_type,
           bytes_to_read, offset);
 
     return UTIL_OK;
@@ -377,7 +375,7 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
 /**
  * Service 0x55: List Tags
  *
- * Response format matches Micro800 - same as client expects in eip_cip_special.c:
+ * Response format:
  *   [0-3]   uint32_le  Instance ID
  *   [4-5]   uint16_le  Symbol type
  *   [6-7]   uint16_le  Element length (bytes)
@@ -385,27 +383,81 @@ static util_err_t symbol_service_read_tag_fragmented(uint8_t service, const cip_
  *   [20-21] uint16_le  String length (name length in bytes)
  *   [22+]   uint8[]    Tag name (raw bytes, no padding)
  *
- * NOTE: ControlLogix uses same format as Micro800. The response data
- * is built by the cpf_protocol dispatcher, which adds the CIP header
- * and pagination support.
- *
- * This implementation returns all tags in a single response. Unlike Micro800,
- * ControlLogix typically has larger packet sizes and doesn't use pagination
- * for List Tags service.
+ * Supports pagination: status code 0x06 indicates more data available
  */
 static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
                                            cip_object_instance_t *instance, plc_context_t *plc) {
 
-    (void)path;
     (void)instance;
-    (void)request;
 
-    /* Build response header */
-    cip_build_response(response, service, CIP_STATUS_OK);
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: starting list_tags service");
 
-    /* Write each tag in the standard format, checking available space before each entry */
-    bool ok = true;
+    /* Parse pagination from path if present */
+    uint32_t start_instance = 0;
+
+    if(path && path->segment_count > 1) {
+        if(path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT ||
+           path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_16BIT ||
+           path->segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_32BIT) {
+            start_instance = path->segments[1].logical.id;
+            pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: pagination instance = %u", start_instance);
+        }
+    }
+
+    /* Get negotiated max packet size */
+    uint16_t max_packet_size = plc->server_to_client_max_packet;
+
+    /* Sanity check: if packet size is unreasonably large (> 1000 bytes), use default 504 */
+    if(max_packet_size == 0 || max_packet_size > 1000) {
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: suspicious negotiated packet size=%u, using default 504",
+              max_packet_size);
+        max_packet_size = 504;
+    }
+
+    /* Calculate available space for tag data:
+     * - max_packet_size = 504 bytes (negotiated during Forward Open)
+     * - CPF data item overhead = 4 bytes (type field: 2 + length field: 2)
+     * - Sequence ID = 2 bytes (counted within the 504 bytes)
+     * - CIP response header = 4 bytes
+     * - Available for tag data = 504 - 4 - 2 - 4 = 494 bytes
+     */
+    size_t cpf_overhead = 4;
+    size_t sequence_id_size = 2;
+    size_t cip_header_size = 4;
+    size_t max_tag_data = max_packet_size - cpf_overhead - sequence_id_size - cip_header_size;
+
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: using packet size=%u, max_tag_data=%zu",
+          max_packet_size, max_tag_data);
+
+    /* Find starting position for pagination */
     tag_def_t *tag = plc->tags;
+    tag_def_t *start_tag = NULL;
+    size_t total_tags = 0;
+
+    while(tag) {
+        if(start_tag == NULL && tag->instance_id >= start_instance) {
+            start_tag = tag;
+        }
+        total_tags++;
+        tag = tag->next;
+    }
+
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: found %zu total tags, starting from instance %u",
+          total_tags, start_instance);
+
+    /* Reserve space for CIP response header (reply service + reserved + status) */
+    buf_t cip_header_buf;
+    if(!buf_reserve_write(response, 4, &cip_header_buf)) {
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags: failed to reserve CIP header space");
+        return buf_get_error(response);
+    }
+
+    /* Write tag entries starting from start_tag, checking space before each */
+    bool ok = true;
+    bool more_data = false;
+    tag = start_tag;
+    size_t entries_written = 0;
+    size_t tag_data_written = 0;
 
     while(tag && ok) {
         /* Calculate size of this tag entry */
@@ -417,12 +469,10 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
                            2 +      /* string_length */
                            name_len; /* tag name */
 
-        /* Check if this entry fits in the remaining response buffer */
-        size_t available = buf_write_size(response);
-        if(entry_size > available) {
-            pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL,
-                  "List Tags (CLogix): buffer full (%zu bytes needed, %zu available), stopping tag enumeration",
-                  entry_size, available);
+        /* Check if this entry fits in remaining space */
+        if(tag_data_written + entry_size > max_tag_data) {
+            /* Can't fit this tag, we have more data */
+            more_data = true;
             break;
         }
 
@@ -461,15 +511,34 @@ static util_err_t symbol_service_list_tags(uint8_t service, const cip_path_t *pa
 
         if(!ok) break;
 
+        /* Update counters for this successful entry */
+        tag_data_written += entry_size;
+        entries_written++;
         tag = tag->next;
     }
 
     if(!ok) {
-        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags (CLogix): failed to write response");
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags: failed to write response");
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags (CLogix): response built successfully");
+    /* Now fill in the CIP header at the reserved location */
+    uint8_t status_code = more_data ? 0x06 : CIP_STATUS_OK;
+
+    buf_reset(&cip_header_buf);
+    bool header_ok = true;
+    header_ok &= buf_write_u8(&cip_header_buf, "reply_service", service | 0x80);
+    header_ok &= buf_write_u8(&cip_header_buf, "reserved", 0x00);
+    header_ok &= buf_write_u8(&cip_header_buf, "status_code", status_code);
+    header_ok &= buf_write_u8(&cip_header_buf, "ext_status_size", 0x00);
+
+    if(!header_ok) {
+        pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_ERROR, "List Tags: failed to write CIP header");
+        return buf_get_error(&cip_header_buf);
+    }
+
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_DETAIL, "List Tags: sent %zu entries (%zu bytes), status=0x%02X",
+          entries_written, tag_data_written, status_code);
 
     return UTIL_OK;
 }
@@ -496,18 +565,18 @@ static cip_object_instance_t *symbol_get_instance(uint32_t instance_id, plc_cont
  * Registration
  * ============================================================================ */
 
-void symbol_object_controllogix_register(cip_object_registry_t *registry) {
+void symbol_object_register(cip_object_registry_t *registry) {
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));
     if(!cls) { return; }
 
     cls->class_id = 0x6B;
-    cls->class_name = "Symbol Object (ControlLogix)";
+    cls->class_name = "Symbol Object";
 
-    /* Register service handlers */
-    cls->service_handlers[0x4C] = symbol_service_read_tag;            /* Read Tag */
-    cls->service_handlers[0x4D] = symbol_service_write_tag;           /* Write Tag */
-    cls->service_handlers[0x52] = symbol_service_read_tag_fragmented; /* Read Tag Fragmented */
-    cls->service_handlers[0x55] = symbol_service_list_tags;           /* List Tags */
+    /* Register service handlers - supports both ControlLogix and Micro800 */
+    cls->service_handlers[0x4C] = symbol_service_read_tag;             /* Read Tag */
+    cls->service_handlers[0x4D] = symbol_service_write_tag;            /* Write Tag */
+    cls->service_handlers[0x52] = symbol_service_read_tag_fragmented;  /* Read Tag Fragmented */
+    cls->service_handlers[0x55] = symbol_service_list_tags;            /* List Tags */
 
     /* Instance management */
     cls->get_instance = symbol_get_instance;
@@ -515,5 +584,5 @@ void symbol_object_controllogix_register(cip_object_registry_t *registry) {
     /* Register in registry */
     cip_registry_register_class(registry, cls);
 
-    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Registered Symbol Object (Class 0x6B) for ControlLogix");
+    pdlog(LOG_MODULE_SYMBOL_OBJECT, LOG_LEVEL_INFO, "Registered Symbol Object (Class 0x6B) with Services 0x4C (Read Tag), 0x4D (Write Tag), 0x52 (Read Tag Fragmented), and 0x55 (List Tags)");
 }

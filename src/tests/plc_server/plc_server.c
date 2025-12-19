@@ -50,9 +50,8 @@
 #include "plc_context.h"
 #include "protocol/eip_protocol.h"
 #include "protocol/cip_object_registry.h"
-#include "protocol/objects/symbol_object_micro800.h"
-#include "protocol/objects/symbol_object_controllogix.h"
-#include "protocol/objects/udt_object_controllogix.h"
+#include "protocol/objects/symbol_object.h"
+#include "protocol/objects/udt_object.h"
 #include "protocol/objects/identity_object.h"
 #include "protocol/objects/connection_manager.h"
 #include "protocol/objects/tag_name_server_omron.h"
@@ -664,18 +663,18 @@ int main(int argc, char *argv[]) {
     }
 
     if(strcmp(plc_type_str, "controllogix") == 0) {
-        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering ControlLogix symbol object");
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering unified symbol object for ControlLogix");
         server.plc_type = PLC_TYPE_CONTROLLOGIX;
-        symbol_object_controllogix_register(server.registry);
+        symbol_object_register(server.registry);
         /* Note: UDT Object registration will happen after UDT parsing in Phase 5 */
     } else if(strcmp(plc_type_str, "micro800") == 0) {
-        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering Micro800 symbol object");
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering unified symbol object for Micro800");
         server.plc_type = PLC_TYPE_MICRO800;
-        symbol_object_micro800_register(server.registry);
+        symbol_object_register(server.registry);
     } else {
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Unknown PLC type: %s (using micro800)", plc_type_str);
         server.plc_type = PLC_TYPE_MICRO800;
-        symbol_object_micro800_register(server.registry);
+        symbol_object_register(server.registry);
     }
 
     identity_object_register(server.registry);
@@ -749,7 +748,7 @@ int main(int argc, char *argv[]) {
 
     /* Register UDT Definition Object (Class 0x6C) for ControlLogix and Micro800 (always, even if no UDTs defined) */
     if(server.plc_type == PLC_TYPE_CONTROLLOGIX || server.plc_type == PLC_TYPE_MICRO800) {
-        if(udt_object_controllogix_register(server.registry, &server) != 0) {
+        if(udt_object_register(server.registry, &server) != 0) {
             pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to register UDT Definition Object");
             args_free(&args_result);
             cip_registry_destroy(server.registry);
