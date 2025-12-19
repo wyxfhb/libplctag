@@ -57,6 +57,243 @@ static int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t 
 // #define MAX_IP_ADDR_SEG_LEN (16)
 
 
+/* Helper function to parse port mnemonics */
+static int parse_port_mnemonic(const char *port_str, size_t *str_index, uint8_t *port_num) {
+    size_t idx = *str_index;
+
+    /* Check for port mnemonics */
+    if(str_cmp_i_n(&port_str[idx], "backplane", 9) == 0) {
+        *port_num = 1;
+        idx += 9;
+    } else if(str_cmp_i_n(&port_str[idx], "a2", 2) == 0) {
+        *port_num = 4;
+        idx += 2;
+    } else if(str_cmp_i_n(&port_str[idx], "b2", 2) == 0) {
+        *port_num = 5;
+        idx += 2;
+    } else if(str_cmp_i_n(&port_str[idx], "a1", 2) == 0 || str_cmp_i_n(&port_str[idx], "a", 1) == 0) {
+        *port_num = 2;
+        idx += (port_str[idx + 1] == '1') ? 2 : 1;
+    } else if(str_cmp_i_n(&port_str[idx], "b1", 2) == 0 || str_cmp_i_n(&port_str[idx], "b", 1) == 0) {
+        *port_num = 3;
+        idx += (port_str[idx + 1] == '1') ? 2 : 1;
+    } else {
+        /* Try to parse as numeric port (0-14) */
+        int val = 0;
+        size_t start_idx = idx;
+
+        while(isdigit(port_str[idx])) {
+            val = (val * 10) + (port_str[idx] - '0');
+            idx++;
+        }
+
+        if(idx == start_idx) {
+            /* No match */
+            return PLCTAG_ERR_NOT_FOUND;
+        }
+
+        if(val < 0 || val > 14) {
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Port number %d is out of bounds (0-14).", val);
+            return PLCTAG_ERR_OUT_OF_BOUNDS;
+        }
+
+        *port_num = (uint8_t)val;
+    }
+
+    *str_index = idx;
+    return PLCTAG_STATUS_OK;
+}
+
+
+/* Helper function to parse link addresses */
+static int parse_link_address(const char *path, size_t *path_index, uint8_t port_num, uint8_t *conn_path, size_t *conn_path_index,
+                              int *is_dhp, uint8_t *dhp_src, uint8_t *dhp_dest) {
+    size_t p_idx = *path_index;
+    size_t c_idx = *conn_path_index;
+    int rc = PLCTAG_STATUS_OK;
+
+    /* Skip spaces */
+    while(path[p_idx] == ' ') { p_idx++; }
+
+    /* Check for DH(node) format */
+    if(str_cmp_i_n(&path[p_idx], "DH(", 3) == 0 || str_cmp_i_n(&path[p_idx], "DHP(", 4) == 0) {
+        int val = 0;
+        size_t paren_start = p_idx;
+
+        /* Skip "DH(" or "DHP(" */
+        p_idx += (path[p_idx + 2] == 'P') ? 4 : 3;
+
+        /* Parse the node number */
+        while(isdigit(path[p_idx])) {
+            val = (val * 10) + (path[p_idx] - '0');
+            p_idx++;
+        }
+
+        if(val < 0 || val > 255) {
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "DH+ node address %d is out of bounds (0-255).", val);
+            return PLCTAG_ERR_OUT_OF_BOUNDS;
+        }
+
+        /* Expect closing parenthesis */
+        if(path[p_idx] != ')') {
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected ')' in DH+ address at position %d.", (int)p_idx);
+            return PLCTAG_ERR_BAD_PARAM;
+        }
+        p_idx++;
+
+        *is_dhp = 1;
+        *dhp_src = 0; /* Source node typically 0 for client */
+        *dhp_dest = (uint8_t)val;
+
+        /* Store the port for DH+ (will be processed later) */
+        conn_path[c_idx++] = port_num;
+
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found DH+ link: port %d, node %d", port_num, val);
+
+    } else {
+        /* Check if this looks like an IP address (starts with digit and contains dots) */
+        size_t check_idx = p_idx;
+        int looks_like_ip = 0;
+
+        if(isdigit(path[check_idx])) {
+            /* Scan ahead to see if we find dots (IP address pattern) */
+            while(path[check_idx] && path[check_idx] != ',' && path[check_idx] != ' ') {
+                if(path[check_idx] == '.') {
+                    looks_like_ip = 1;
+                    break;
+                }
+                check_idx++;
+            }
+        } else if(str_cmp_i_n(&path[p_idx], "IP(", 3) == 0) {
+            looks_like_ip = 1;
+        }
+
+        if(looks_like_ip) {
+            /* IP address format - either IP(...) or plain dotted notation */
+            uint8_t *addr_seg_len = NULL;
+            int val = 0;
+            int octet_count = 0;
+            int has_wrapper = 0;
+
+            /* Check for IP( wrapper */
+            if(str_cmp_i_n(&path[p_idx], "IP(", 3) == 0) {
+                p_idx += 3;
+                has_wrapper = 1;
+            }
+
+            /* Mark port with extended address bit (OR is non-destructive if already set) */
+            conn_path[c_idx++] = port_num | 0x10;
+
+            /* Save location for segment length */
+            addr_seg_len = &conn_path[c_idx];
+            *addr_seg_len = 0;
+            c_idx++;
+
+            /* Parse IP address octets */
+            for(octet_count = 0; octet_count < 4; octet_count++) {
+                val = 0;
+                size_t start = p_idx;
+
+                while(isdigit(path[p_idx]) && (*addr_seg_len) < (MAX_IP_ADDR_SEG_LEN - 2)) {
+                    val = (val * 10) + (path[p_idx] - '0');
+                    conn_path[c_idx++] = (uint8_t)path[p_idx];
+                    p_idx++;
+                    (*addr_seg_len)++;
+                }
+
+                if(p_idx == start || val < 0 || val > 255) {
+                    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Invalid IP address octet at position %d.", (int)p_idx);
+                    return PLCTAG_ERR_BAD_PARAM;
+                }
+
+                /* Expect dot between octets (except after 4th) */
+                if(octet_count < 3) {
+                    if(path[p_idx] != '.') {
+                        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected '.' in IP address at position %d.", (int)p_idx);
+                        return PLCTAG_ERR_BAD_PARAM;
+                    }
+                    conn_path[c_idx++] = '.';
+                    p_idx++;
+                    (*addr_seg_len)++;
+                }
+            }
+
+            /* Check for optional :port */
+            if(path[p_idx] == ':') {
+                conn_path[c_idx++] = ':';
+                p_idx++;
+                (*addr_seg_len)++;
+
+                /* Parse port number */
+                val = 0;
+                size_t start = p_idx;
+                while(isdigit(path[p_idx]) && (*addr_seg_len) < (MAX_IP_ADDR_SEG_LEN - 1)) {
+                    val = (val * 10) + (path[p_idx] - '0');
+                    conn_path[c_idx++] = (uint8_t)path[p_idx];
+                    p_idx++;
+                    (*addr_seg_len)++;
+                }
+
+                if(p_idx == start || val < 0 || val > 65535) {
+                    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Invalid port number in IP address at position %d.", (int)p_idx);
+                    return PLCTAG_ERR_BAD_PARAM;
+                }
+            }
+
+            /* Expect closing parenthesis if we had wrapper */
+            if(has_wrapper) {
+                if(path[p_idx] != ')') {
+                    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected ')' in IP address at position %d.", (int)p_idx);
+                    return PLCTAG_ERR_BAD_PARAM;
+                }
+                p_idx++;
+            }
+
+            /* Pad to even length if needed */
+            if((*addr_seg_len) & 0x01) { conn_path[c_idx++] = 0x00; }
+
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found IP address link on port %d", port_num | 0x10);
+
+        } else {
+            /* Plain numeric link address */
+            int val = 0;
+            size_t start = p_idx;
+
+            while(isdigit(path[p_idx])) {
+                val = (val * 10) + (path[p_idx] - '0');
+                p_idx++;
+            }
+
+            if(p_idx == start) {
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected link address at position %d.", (int)p_idx);
+                return PLCTAG_ERR_BAD_PARAM;
+            }
+
+            if(val < 0 || val > 255) {
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Link address %d is out of bounds (0-255).", val);
+                return PLCTAG_ERR_OUT_OF_BOUNDS;
+            }
+
+            /* Encode the link */
+            if(val <= 14) {
+                /* Encode link value directly in a single byte */
+                conn_path[c_idx++] = (uint8_t)val;
+            } else {
+                /* Use extended format: 0x0F followed by link byte */
+                conn_path[c_idx++] = 0x0F;
+                conn_path[c_idx++] = (uint8_t)val;
+            }
+
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found numeric link: port %d, link %d", port_num, val);
+        }
+    }
+
+    *path_index = p_idx;
+    *conn_path_index = c_idx;
+    return PLCTAG_STATUS_OK;
+}
+
+
 int cip_encode_path(const char *path, int *needs_connection, plc_type_t plc_type, uint8_t *tmp_conn_path, int *tmp_conn_path_size,
                     int *is_dhp, uint16_t *dhp_dest) {
     size_t path_len = 0;
@@ -65,57 +302,128 @@ int cip_encode_path(const char *path, int *needs_connection, plc_type_t plc_type
     uint8_t dhp_port = 0;
     uint8_t dhp_src_node = 0;
     uint8_t dhp_dest_node = 0;
-    // uint8_t tmp_conn_path[MAX_CONN_PATH + MAX_IP_ADDR_SEG_LEN];
     size_t max_conn_path_size = (size_t)(*tmp_conn_path_size) - MAX_IP_ADDR_SEG_LEN;
+    int rc = PLCTAG_STATUS_OK;
 
-    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Starting");
+    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Starting with path: %s", path);
 
     *is_dhp = 0;
+    *dhp_dest = 0;
+
+    if(!path || !*path) {
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Path string is empty or NULL.");
+        return PLCTAG_ERR_BAD_PARAM;
+    }
 
     path_len = (size_t)(ssize_t)str_length(path);
 
+    /* Parse path segments - check for old-style DH+ first (A:N:M or B:N:M), then try new format */
     while(path && path[path_index] && path_index < path_len && conn_path_index < max_conn_path_size) {
-        /* skip spaces before each segment */
-        while(path[path_index] == ' ') { path_index++; }
+        size_t save_path_index = path_index;
+        size_t save_conn_path_index = conn_path_index;
+        uint8_t port_num = 0;
 
-        if(path[path_index] == ',') {
-            /* skip separators. */
-            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Skipping separator character '%c'.", (char)path[path_index]);
+        /* Skip leading spaces and commas */
+        while(path[path_index] == ' ' || path[path_index] == ',') { path_index++; }
 
-            path_index++;
-        } else if(match_numeric_segment(path, &path_index, tmp_conn_path, &conn_path_index) == PLCTAG_STATUS_OK) {
-            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found numeric segment.");
-        } else if(match_ip_addr_segment(path, &path_index, tmp_conn_path, &conn_path_index) == PLCTAG_STATUS_OK) {
-            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found IP address segment.");
-        } else if(match_dhp_addr_segment(path, &path_index, &dhp_port, &dhp_src_node, &dhp_dest_node) == PLCTAG_STATUS_OK) {
-            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found DH+ address segment.");
+        if(!path[path_index]) { break; /* End of string */ }
 
-            /* check if it is last. */
-            if(path_index < path_len) {
-                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "DH+ address must be the last segment in a path! %d %d", (int)(ssize_t)path_index,
-                       (int)(ssize_t)path_len);
+        /* First, try to match old-style DH+ format (A:N:M or B:N:M) */
+        if(match_dhp_addr_segment(path, &path_index, &dhp_port, &dhp_src_node, &dhp_dest_node) == PLCTAG_STATUS_OK) {
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found old-format DH+ address segment.");
+
+            /* Skip trailing spaces */
+            while(path[path_index] == ' ' || path[path_index] == ',') { path_index++; }
+
+            /* Check if there's more after DH+ segment */
+            if(path[path_index] != '\0') {
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "DH+ address must be the last segment in a path at position %d.",
+                       (int)path_index);
                 return PLCTAG_ERR_BAD_PARAM;
             }
 
             *is_dhp = 1;
-        } else {
-            /* unknown, cannot parse this! */
-            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Unable to parse remaining path string from position %d, \"%s\".", (int)(ssize_t)path_index,
-                   (char *)&path[path_index]);
+            break; /* DH+ must be last */
+        }
+
+        /* Restore position and try new format */
+        path_index = save_path_index;
+
+        /* Try new port,link format */
+        rc = parse_port_mnemonic(path, &path_index, &port_num);
+        if(rc != PLCTAG_STATUS_OK) {
+            /* Not a valid port - try old-style numeric or IP segment */
+            path_index = save_path_index;
+
+            if(match_numeric_segment(path, &path_index, tmp_conn_path, &conn_path_index) == PLCTAG_STATUS_OK) {
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found old-format numeric segment.");
+                continue;
+            } else if(match_ip_addr_segment(path, &path_index, tmp_conn_path, &conn_path_index) == PLCTAG_STATUS_OK) {
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found old-format IP address segment.");
+                continue;
+            } else {
+                /* Unable to parse this segment */
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Unable to parse path segment at position %d, \"%s\".",
+                       (int)save_path_index, &path[save_path_index]);
+                return PLCTAG_ERR_BAD_PARAM;
+            }
+        }
+
+        /* Successfully parsed port, now expect comma and link */
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Parsed port: %d", port_num);
+
+        /* Skip spaces */
+        while(path[path_index] == ' ') { path_index++; }
+
+        /* Expect comma after port */
+        if(path[path_index] != ',') {
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected ',' after port at position %d in path \"%s\".", (int)path_index,
+                   &path[path_index]);
             return PLCTAG_ERR_BAD_PARAM;
+        }
+        path_index++;
+
+        /* Parse link */
+        rc = parse_link_address(path, &path_index, port_num, tmp_conn_path, &conn_path_index, is_dhp, &dhp_src_node,
+                                &dhp_dest_node);
+        if(rc != PLCTAG_STATUS_OK) {
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Failed to parse link at position %d in path \"%s\".", (int)path_index,
+                   &path[path_index]);
+            return rc;
+        }
+
+        /* If this is a DH+ link, it must be the last segment */
+        if(*is_dhp) {
+            dhp_port = port_num;
+
+            /* Skip trailing spaces */
+            while(path[path_index] == ' ') { path_index++; }
+
+            /* Check if there's more after DH+ segment */
+            if(path[path_index] != '\0') {
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "DH+ address must be the last segment in path at position %d.",
+                       (int)path_index);
+                return PLCTAG_ERR_BAD_PARAM;
+            }
+
+            break; /* DH+ must be last */
         }
     }
 
     if(conn_path_index >= max_conn_path_size) {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Encoded connection path is too long (%d >= %d).", (int)(ssize_t)conn_path_index, max_conn_path_size);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Encoded connection path is too long (%d >= %d).", (int)conn_path_index,
+               (int)max_conn_path_size);
         return PLCTAG_ERR_TOO_LARGE;
     }
 
+    /* Handle special termination cases */
     if(*is_dhp && (plc_type == AB_PLC_PLC5 || plc_type == AB_PLC_SLC || plc_type == AB_PLC_MLGX)) {
-        /* DH+ bridging always needs a connection. */
+        /* DH+ bridging always needs a connection */
         *needs_connection = 1;
 
-        /* add the special PCCC/DH+ routing on the end. */
+        /* Remove the DH+ port we stored earlier and add proper PCCC/DH+ routing */
+        conn_path_index--; /* Remove the port byte we added */
+
         tmp_conn_path[conn_path_index + 0] = 0x20;
         tmp_conn_path[conn_path_index + 1] = 0xA6;
         tmp_conn_path[conn_path_index + 2] = 0x24;
@@ -125,15 +433,15 @@ int cip_encode_path(const char *path, int *needs_connection, plc_type_t plc_type
         conn_path_index += 6;
 
         *dhp_dest = (uint16_t)dhp_dest_node;
+
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Added DH+ routing: port=%d, dest=%d", dhp_port, dhp_dest_node);
     } else if(!*is_dhp) {
         if(*needs_connection) {
             pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "PLC needs connection, adding path to the router object.");
 
             /*
-             * we do a generic path to the router
-             * object in the PLC.  But only if the PLC is
-             * one that needs a connection.  For instance a
-             * Micro850 needs to work in connected mode.
+             * Add generic path to the router object in the PLC.
+             * Only if the PLC needs a connection (e.g., Micro850).
              */
             tmp_conn_path[conn_path_index + 0] = 0x20;
             tmp_conn_path[conn_path_index + 1] = 0x02;
@@ -144,36 +452,33 @@ int cip_encode_path(const char *path, int *needs_connection, plc_type_t plc_type
 
         *dhp_dest = 0;
     } else {
-        /*
-         *we had the special DH+ format and it was
-         * either not last or not a PLC5/SLC.  That
-         * is an error.
-         */
-
+        /* DH+ format used with non-PCCC PLC */
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "DH+ addressing only supported with PLC5/SLC/MicroLogix PLCs.");
         *dhp_dest = 0;
-
         return PLCTAG_ERR_BAD_PARAM;
     }
 
-    /*
-     * zero pad the path to a multiple of 16-bit
-     * words.
-     */
-    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "IOI size before %d", conn_path_index);
+    /* Zero pad to multiple of 16-bit words */
+    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "IOI size before padding: %d", (int)conn_path_index);
     if(conn_path_index & 0x01) {
         tmp_conn_path[conn_path_index] = 0;
         conn_path_index++;
     }
 
-    *tmp_conn_path_size = (uint8_t)conn_path_index;
+    *tmp_conn_path_size = (int)conn_path_index;
 
-    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Done");
+    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Done, encoded path size: %d bytes", *tmp_conn_path_size);
 
     return PLCTAG_STATUS_OK;
 }
 
 
-int match_numeric_segment(const char *path, size_t *path_index, uint8_t *conn_path, size_t *conn_path_index) {
+/*
+ * DEPRECATED FUNCTIONS - Kept for reference but no longer used
+ * The path encoding now uses port,link pairs instead of these individual segment matchers
+ */
+
+static int match_numeric_segment(const char *path, size_t *path_index, uint8_t *conn_path, size_t *conn_path_index) {
     int val = 0;
     size_t p_index = *path_index;
     size_t c_index = *conn_path_index;
@@ -193,7 +498,8 @@ int match_numeric_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 
     /* was the numeric segment valid? */
     if(val < 0 || val > 0x0F) {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Numeric segment in path at position %d is out of bounds!", (int)(ssize_t)(*path_index));
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Numeric segment in path at position %d is out of bounds!",
+               (int)(ssize_t)(*path_index));
         return PLCTAG_ERR_OUT_OF_BOUNDS;
     }
 
@@ -216,13 +522,7 @@ int match_numeric_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 }
 
 
-/*
- * match symbolic IP address segments.
- *  18,10.206.10.14 - port 2/A -> 10.206.10.14
- *  19,10.206.10.14 - port 3/B -> 10.206.10.14
- */
-
-int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_path, size_t *conn_path_index) {
+static int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_path, size_t *conn_path_index) {
     uint8_t *addr_seg_len = NULL;
     int val = 0;
     size_t p_index = *path_index;
@@ -238,7 +538,8 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
     }
 
     if(val != 18 && val != 19) {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Path segment at %d does not match IP address segment.", (int)(ssize_t)*path_index);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Path segment at %d does not match IP address segment.",
+               (int)(ssize_t)*path_index);
         return PLCTAG_ERR_NOT_FOUND;
     }
 
@@ -253,8 +554,9 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 
     /* is the next character a comma? */
     if(path[p_index] != ',') {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Not an IP address segment starting at position %d of path.  Remaining: \"%s\".",
-               (int)(ssize_t)p_index, &path[p_index]);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL,
+               "Not an IP address segment starting at position %d of path.  Remaining: \"%s\".", (int)(ssize_t)p_index,
+               &path[p_index]);
         return PLCTAG_ERR_NOT_FOUND;
     }
 
@@ -294,7 +596,8 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 
     /* is the next character a dot? */
     if(path[p_index] != '.') {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Unexpected character '%c' found at position %d in first IP address part.", path[p_index], p_index);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Unexpected character '%c' found at position %d in first IP address part.",
+               path[p_index], p_index);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -318,7 +621,8 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
     }
 
     if(val < 0 || val > 255) {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Second IP address part is out of bounds (0 <= %d < 256) for an IPv4 octet.", val);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Second IP address part is out of bounds (0 <= %d < 256) for an IPv4 octet.",
+               val);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -329,7 +633,8 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 
     /* is the next character a dot? */
     if(path[p_index] != '.') {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Unexpected character '%c' found at position %d in second IP address part.", path[p_index], p_index);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Unexpected character '%c' found at position %d in second IP address part.",
+               path[p_index], p_index);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -364,7 +669,8 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 
     /* is the next character a dot? */
     if(path[p_index] != '.') {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Unexpected character '%c' found at position %d in third IP address part.", path[p_index], p_index);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Unexpected character '%c' found at position %d in third IP address part.",
+               path[p_index], p_index);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -388,7 +694,8 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
     }
 
     if(val < 0 || val > 255) {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Fourth IP address part is out of bounds (0 <= %d < 256) for an IPv4 octet.", val);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Fourth IP address part is out of bounds (0 <= %d < 256) for an IPv4 octet.",
+               val);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -413,15 +720,7 @@ int match_ip_addr_segment(const char *path, size_t *path_index, uint8_t *conn_pa
 }
 
 
-/*
- * match DH+ address segments.
- *  A:1:2 - port 2/A -> DH+ node 2
- *  B:1:2 - port 3/B -> DH+ node 2
- *
- * A and B can be lowercase or numeric.
- */
-
-int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t *port, uint8_t *src_node, uint8_t *dest_node) {
+static int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t *port, uint8_t *src_node, uint8_t *dest_node) {
     int val = 0;
     size_t p_index = *path_index;
 
@@ -442,8 +741,8 @@ int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t *port, 
         case '3': *port = 2; break;
 
         default:
-            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Character '%c' at position %d does not match start of DH+ segment.", path[p_index],
-                   (int)(ssize_t)p_index);
+            pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Character '%c' at position %d does not match start of DH+ segment.",
+                   path[p_index], (int)(ssize_t)p_index);
             return PLCTAG_ERR_NOT_FOUND;
             break;
     }
@@ -455,7 +754,8 @@ int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t *port, 
 
     /* is the next character a colon? */
     if(path[p_index] != ':') {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Character '%c' at position %d does not match first colon expected in DH+ segment.", path[p_index],
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL,
+               "Character '%c' at position %d does not match first colon expected in DH+ segment.", path[p_index],
                (int)(ssize_t)p_index);
         return PLCTAG_ERR_BAD_PARAM;
     }
@@ -485,8 +785,9 @@ int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t *port, 
 
     /* is the next character a colon? */
     if(path[p_index] != ':') {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Character '%c' at position %d does not match the second colon expected in DH+ segment.",
-               path[p_index], (int)(ssize_t)p_index);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL,
+               "Character '%c' at position %d does not match the second colon expected in DH+ segment.", path[p_index],
+               (int)(ssize_t)p_index);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -514,8 +815,8 @@ int match_dhp_addr_segment(const char *path, size_t *path_index, uint8_t *port, 
     *dest_node = (uint8_t)(unsigned int)val;
     *path_index = p_index;
 
-    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found DH+ path port:%d, source node:%d, destination node:%d.", (int)(unsigned int)*port,
-           (int)(unsigned int)*src_node, (int)(unsigned int)*dest_node);
+    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found DH+ path port:%d, source node:%d, destination node:%d.",
+           (int)(unsigned int)*port, (int)(unsigned int)*src_node, (int)(unsigned int)*dest_node);
 
     pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Done.");
 
@@ -569,8 +870,8 @@ int cip_encode_tag_name(ab_tag_p tag, const char *name) {
                     pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Found bit identifier %u.", tag->bit);
                     break;
                 } else {
-                    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected a symbolic segment or a bit identifier at position %d in tag name %s",
-                           name_index, name);
+                    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN,
+                           "Expected a symbolic segment or a bit identifier at position %d in tag name %s", name_index, name);
                     return PLCTAG_ERR_BAD_PARAM;
                 }
             } else {
@@ -590,7 +891,8 @@ int cip_encode_tag_name(ab_tag_p tag, const char *name) {
 
             /* must terminate with a closing ']' */
             if(name[name_index] != ']') {
-                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Bad tag name format, expected closing array bracket at %d in tag name %s!", name_index, name);
+                pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN,
+                       "Bad tag name format, expected closing array bracket at %d in tag name %s!", name_index, name);
                 return PLCTAG_ERR_BAD_PARAM;
             }
 
@@ -637,12 +939,13 @@ int parse_bit_segment(ab_tag_p tag, const char *name, int *name_index) {
     /* sanity checks. */
     if(p == q) {
         /* no number. */
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected bit identifier or symbolic segment at position %d in tag name %s!", *name_index, name);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Expected bit identifier or symbolic segment at position %d in tag name %s!",
+               *name_index, name);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
     if((val < 0) || (val >= 65536)) {
-        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Bit identifier must be between 0 and 255, inclusive, was %d!", (int)val);
+        pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Bit identifier must be between 0 and 65535, inclusive, was %d!", (int)val);
         return PLCTAG_ERR_BAD_PARAM;
     }
 
@@ -716,7 +1019,8 @@ int parse_numeric_segment(ab_tag_p tag, const char *name, int *encoded_index, in
     const char *p, *q;
     long val;
 
-    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Starting with name index=%d and encoded name index=%d.", *name_index, *encoded_index);
+    pdebug(DEBUG_MODULE_AB_CIP, DEBUG_DETAIL, "Starting with name index=%d and encoded name index=%d.", *name_index,
+           *encoded_index);
 
     p = &name[*name_index];
     q = p;
