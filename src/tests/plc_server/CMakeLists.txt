@@ -5,7 +5,6 @@ add_executable(plc_server
     plc_server.c
     tag_storage.c
     udt_storage.c
-    omron_storage.c
     protocol/eip_protocol.c
     protocol/cpf_protocol.c
     protocol/cip_message_router.c

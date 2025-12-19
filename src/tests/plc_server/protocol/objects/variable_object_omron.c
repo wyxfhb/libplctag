@@ -39,7 +39,7 @@
 
 #include "variable_object_omron.h"
 #include "../cip_message_router.h"
-#include "../../omron_storage.h"
+#include "../../tag_storage.h"
 #include "../../plc_context.h"
 #include "../../../utils/log.h"
 #include "../../../utils/buf.h"
@@ -49,7 +49,7 @@
  * ============================================================================ */
 
 typedef struct {
-    omron_registry_t *registry;
+    plc_context_t *plc;
 } variable_object_omron_context_t;
 
 static variable_object_omron_context_t *vo_context = NULL;
@@ -84,60 +84,68 @@ static util_err_t variable_service_get_attributes_all(uint8_t service, const cip
 
     (void)request;
 
-    omron_variable_t *var = NULL;
+    tag_def_t *tag = NULL;
 
-    /* If path has a symbolic segment, look up the variable by tag name */
+    /* If path has a symbolic segment, look up the tag by name */
     if(path && path->segment_count > 0 && path->segments[0].type == CIP_SEGMENT_SYMBOLIC) {
-        if(!vo_context || !vo_context->registry) {
-            pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: registry not initialized");
+        if(!vo_context || !vo_context->plc || !vo_context->plc->tags) {
+            pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: tag storage not initialized");
             cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
             return UTIL_ENOTFOUND;
         }
 
-        /* Look up variable by tag name */
+        /* Look up tag by name */
         const char *tag_name = path->segments[0].symbolic.name;
         size_t tag_name_len = path->segments[0].symbolic.length;
-        var = omron_variable_find_by_name_len(vo_context->registry, tag_name, tag_name_len);
 
-        if(!var) {
-            pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: variable '%.*s' not found",
+        /* Search through tag list for matching name */
+        for(tag_def_t *t = vo_context->plc->tags; t != NULL; t = t->next) {
+            if(strlen(t->name) == tag_name_len && strncmp(t->name, tag_name, tag_name_len) == 0) {
+                tag = t;
+                break;
+            }
+        }
+
+        if(!tag) {
+            pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: tag '%.*s' not found",
                   (int)tag_name_len, tag_name);
             cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
             return UTIL_ENOTFOUND;
         }
     } else if(instance && instance->instance_data) {
         /* Use provided instance */
-        var = (omron_variable_t *)instance->instance_data;
+        tag = (tag_def_t *)instance->instance_data;
     } else {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: invalid instance");
         cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_ENOTFOUND;
     }
 
-    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: variable '%s' id=%u size=%zu type=0x%02X",
-          var->name, var->instance_id, var->data_size, var->type_code);
+    size_t data_size = tag->elem_count * tag->elem_size;
+    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: tag '%s' id=%u size=%zu type=0x%04X",
+          tag->name, tag->instance_id, data_size, tag->tag_type);
 
     /* Build response */
     cip_build_response(response, service, CIP_STATUS_OK);
 
     bool ok = true;
-    ok &= buf_write_u16_le(response, "size", (uint16_t)var->data_size);
-    ok &= buf_write_u8(response, "type_code", (uint8_t)(var->type_code & 0xFF));
-    ok &= buf_write_u8(response, "array_type", var->dim_count > 0 ? 1 : 0);
-    ok &= buf_write_u8(response, "dim_count", var->dim_count);
+    ok &= buf_write_u16_le(response, "size", (uint16_t)data_size);
+    ok &= buf_write_u8(response, "type_code", (uint8_t)(tag->tag_type & 0xFF));
+    ok &= buf_write_u8(response, "array_type", tag->dim_count > 0 ? 1 : 0);
+    ok &= buf_write_u8(response, "dim_count", tag->dim_count);
     ok &= buf_write_u8(response, "reserved1", 0);
 
-    /* Write dimensions */
-    ok &= buf_write_u32_le(response, "dim1", var->dim_count > 0 ? var->dimensions[0] : 0);
-    ok &= buf_write_u32_le(response, "dim2", var->dim_count > 1 ? var->dimensions[1] : 0);
-    ok &= buf_write_u32_le(response, "dim3", var->dim_count > 2 ? var->dimensions[2] : 0);
+    /* Write dimensions (convert size_t to uint32_t) */
+    ok &= buf_write_u32_le(response, "dim1", tag->dim_count > 0 ? (uint32_t)tag->dimensions[0] : 0);
+    ok &= buf_write_u32_le(response, "dim2", tag->dim_count > 1 ? (uint32_t)tag->dimensions[1] : 0);
+    ok &= buf_write_u32_le(response, "dim3", tag->dim_count > 2 ? (uint32_t)tag->dimensions[2] : 0);
 
     /* Bit position and reserved */
     ok &= buf_write_u8(response, "bit_position", 0);
     ok &= buf_write_u16_le(response, "reserved2", 0);
 
-    /* Type instance ID (for structures) */
-    ok &= buf_write_u32_le(response, "type_instance_id", var->type_instance_id);
+    /* Type instance ID (for structures, 0 for built-in types) */
+    ok &= buf_write_u32_le(response, "type_instance_id", tag->udt_id);
 
     if(!ok) {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_ERROR, "Get Attributes All: failed to write response");
@@ -177,7 +185,8 @@ static util_err_t variable_service_read_tag(uint8_t service, const cip_path_t *p
         return UTIL_ENOTFOUND;
     }
 
-    omron_variable_t *var = (omron_variable_t *)instance->instance_data;
+    tag_def_t *tag = (tag_def_t *)instance->instance_data;
+    size_t data_size = tag->elem_count * tag->elem_size;
 
     /* Parse request: element count */
     uint16_t element_count = 0;
@@ -213,37 +222,37 @@ static util_err_t variable_service_read_tag(uint8_t service, const cip_path_t *p
     }
 
     /* Validate offset and count */
-    if(read_offset >= var->data_size) {
-        pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Read Tag: offset %u beyond variable size %zu", read_offset,
-              var->data_size);
+    if(read_offset >= (uint32_t)data_size) {
+        pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Read Tag: offset %u beyond tag size %zu", read_offset,
+              data_size);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
-    size_t bytes_available = var->data_size - read_offset;
+    size_t bytes_available = data_size - read_offset;
     size_t bytes_to_read = read_count;
     if(bytes_to_read > bytes_available) { bytes_to_read = bytes_available; }
 
-    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: variable '%s' offset=%u count=%u bytes=%zu", var->name,
+    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: tag '%s' offset=%u count=%u bytes=%zu", tag->name,
           read_offset, read_count, bytes_to_read);
 
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
 
     bool ok = true;
-    ok &= buf_write_u8(response, "type_code", (uint8_t)(var->type_code & 0xFF));
+    ok &= buf_write_u8(response, "type_code", (uint8_t)(tag->tag_type & 0xFF));
     ok &= buf_write_u8(response, "reserved", 0);
     ok &= buf_write_u16_le(response, "count", (uint16_t)(bytes_to_read));
 
     /* Write data */
-    if(bytes_to_read > 0) { ok &= buf_write_bytes(response, "data", var->data + read_offset, bytes_to_read); }
+    if(bytes_to_read > 0) { ok &= buf_write_bytes(response, "data", tag->data + read_offset, bytes_to_read); }
 
     if(!ok) {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_ERROR, "Read Tag: failed to write response");
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: success - variable '%s' bytes=%zu", var->name,
+    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: success - tag '%s' bytes=%zu", tag->name,
           bytes_to_read);
 
     return UTIL_OK;
@@ -279,7 +288,8 @@ static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *
         return UTIL_ENOTFOUND;
     }
 
-    omron_variable_t *var = (omron_variable_t *)instance->instance_data;
+    tag_def_t *tag = (tag_def_t *)instance->instance_data;
+    size_t data_size = tag->elem_count * tag->elem_size;
 
     /* Parse request header */
     uint8_t tag_type = 0;
@@ -329,22 +339,22 @@ static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *
     }
 
     /* Validate type code (basic check) */
-    if(tag_type != var->type_code) {
+    if(tag_type != (tag->tag_type & 0xFF)) {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Write Tag: type mismatch (expected 0x%02X, got 0x%02X)",
-              var->type_code, tag_type);
+              (tag->tag_type & 0xFF), tag_type);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
     /* Validate offset and count */
-    if(write_offset >= var->data_size) {
-        pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Write Tag: offset %u beyond variable size %zu", write_offset,
-              var->data_size);
+    if(write_offset >= (uint32_t)data_size) {
+        pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Write Tag: offset %u beyond tag size %zu", write_offset,
+              data_size);
         cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
         return UTIL_EINVAL;
     }
 
-    size_t bytes_available = var->data_size - write_offset;
+    size_t bytes_available = data_size - write_offset;
     size_t bytes_to_write = write_count;
     if(bytes_to_write > bytes_available) { bytes_to_write = bytes_available; }
 
@@ -357,12 +367,12 @@ static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *
         return UTIL_EINVAL;
     }
 
-    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Write Tag: variable '%s' offset=%u count=%u bytes=%zu", var->name,
+    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Write Tag: tag '%s' offset=%u count=%u bytes=%zu", tag->name,
           write_offset, write_count, bytes_to_write);
 
-    /* Read data from request and write to variable */
+    /* Read data from request and write to tag */
     bool ok = true;
-    ok &= buf_read_bytes(request, "data", var->data + write_offset, bytes_to_write);
+    ok &= buf_read_bytes(request, "data", tag->data + write_offset, bytes_to_write);
 
     if(!ok) {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_ERROR, "Write Tag: failed to read data from request");
@@ -373,7 +383,7 @@ static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *
     /* Build response (empty on success) */
     cip_build_response(response, service, CIP_STATUS_OK);
 
-    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Write Tag: success - variable '%s' bytes=%zu", var->name,
+    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Write Tag: success - tag '%s' bytes=%zu", tag->name,
           bytes_to_write);
 
     return UTIL_OK;
@@ -386,19 +396,25 @@ static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *
 static cip_object_instance_t *variable_get_instance(uint32_t instance_id, plc_context_t *plc) {
     (void)plc;
 
-    if(!vo_context || !vo_context->registry) { return NULL; }
+    if(!vo_context || !vo_context->plc || !vo_context->plc->tags) { return NULL; }
 
-    /* Find variable by instance ID */
-    omron_variable_t *var = omron_variable_find_by_id(vo_context->registry, instance_id);
-    if(!var) { return NULL; }
+    /* Find tag by instance ID */
+    tag_def_t *tag = NULL;
+    for(tag_def_t *t = vo_context->plc->tags; t != NULL; t = t->next) {
+        if(t->instance_id == instance_id) {
+            tag = t;
+            break;
+        }
+    }
+    if(!tag) { return NULL; }
 
-    /* Allocate instance structure and wrap variable */
+    /* Allocate instance structure and wrap tag */
     cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
     if(!instance) { return NULL; }
 
     instance->object_class = NULL; /* Will be set by registry */
     instance->instance_id = instance_id;
-    instance->instance_data = (void *)var;
+    instance->instance_data = (void *)tag;
 
     return instance;
 }
@@ -407,15 +423,15 @@ static cip_object_instance_t *variable_get_instance(uint32_t instance_id, plc_co
  * Registration
  * ============================================================================ */
 
-void variable_object_omron_register(cip_object_registry_t *registry, omron_registry_t *omron_registry) {
-    if(!registry || !omron_registry) { return; }
+void variable_object_omron_register(cip_object_registry_t *registry, plc_context_t *plc) {
+    if(!registry || !plc) { return; }
 
-    /* Store registry for service handlers */
+    /* Store PLC context for service handlers */
     if(!vo_context) {
         vo_context = (variable_object_omron_context_t *)calloc(1, sizeof(*vo_context));
         if(!vo_context) { return; }
     }
-    vo_context->registry = omron_registry;
+    vo_context->plc = plc;
 
     /* Create and register the object class */
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));

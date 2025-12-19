@@ -9,7 +9,6 @@
 
 /* Forward declarations */
 typedef struct tag_def_s tag_def_t;
-typedef struct omron_registry_s omron_registry_t;
 typedef struct udt_def_s udt_def_t;
 
 /* Log module for PLC server (will be defined in log_modules.def) */
@@ -47,9 +46,8 @@ typedef struct plc_context_s {
 
     plc_type_t plc_type;                /* PLC type for this server */
     cip_object_registry_t *registry;  /* CIP object registry */
-    tag_def_t *tags;                  /* Tag storage (linked list) */
-    udt_def_t *udts;                  /* UDT definitions (linked list) */
-    omron_registry_t *omron_registry; /* Omron variable/type registry (Phase 6) */
+    tag_def_t *tags;                  /* Tag storage (linked list) - used by all PLC types */
+    udt_def_t *udts;                  /* UDT definitions (linked list) - used by all PLC types */
 
     /* Connection Manager state (will be moved to client_context in full refactoring) */
     uint32_t client_connection_id;        /* Client connection ID */

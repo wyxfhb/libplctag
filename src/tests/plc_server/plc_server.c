@@ -57,7 +57,6 @@
 #include "protocol/objects/tag_name_server_omron.h"
 #include "protocol/objects/variable_object_omron.h"
 #include "protocol/objects/variable_type_object_omron.h"
-#include "omron_storage.h"
 #include "tag_storage.h"
 #include "udt_storage.h"
 
@@ -253,6 +252,12 @@ static args_flag_def_t flags[] = {{.name = "listen",
                                    .required = ARGS_OPTIONAL,
                                    .repeat = ARGS_MULTIPLE,
                                    .description = "UDT definition: UdtName:{field:type@offset,...}(totalSize)",
+                                   .default_value = {.has_default = false}},
+                                  {.name = "tag",
+                                   .type = ARGS_TYPE_STRING,
+                                   .required = ARGS_OPTIONAL,
+                                   .repeat = ARGS_MULTIPLE,
+                                   .description = "Tag: name:type[dim1] or name:type[dim1,dim2] or name:type[dim1,dim2,dim3]",
                                    .default_value = {.has_default = false}},
                                   {
                                       .name = "help",
@@ -666,11 +671,14 @@ int main(int argc, char *argv[]) {
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering unified symbol object for ControlLogix");
         server.plc_type = PLC_TYPE_CONTROLLOGIX;
         symbol_object_register(server.registry);
-        /* Note: UDT Object registration will happen after UDT parsing in Phase 5 */
+        /* Note: UDT Object registration will happen after UDT parsing */
     } else if(strcmp(plc_type_str, "micro800") == 0) {
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering unified symbol object for Micro800");
         server.plc_type = PLC_TYPE_MICRO800;
         symbol_object_register(server.registry);
+    } else if(strcmp(plc_type_str, "omron") == 0) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registering Omron object model");
+        server.plc_type = PLC_TYPE_OMRON;
     } else {
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Unknown PLC type: %s (using micro800)", plc_type_str);
         server.plc_type = PLC_TYPE_MICRO800;
@@ -746,8 +754,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Register UDT Definition Object (Class 0x6C) for ControlLogix and Micro800 (always, even if no UDTs defined) */
+    /* Register UDT Definition Object (Class 0x6C) for ControlLogix, Micro800, and Omron */
     if(server.plc_type == PLC_TYPE_CONTROLLOGIX || server.plc_type == PLC_TYPE_MICRO800) {
+        /* ControlLogix/Micro800 use unified symbol object */
         if(udt_object_register(server.registry, &server) != 0) {
             pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to register UDT Definition Object");
             args_free(&args_result);
@@ -756,28 +765,177 @@ int main(int argc, char *argv[]) {
             socket_cleanup();
             return EXIT_FAILURE;
         }
+    } else if(server.plc_type == PLC_TYPE_OMRON) {
+        /* Omron uses its own Variable Type Object (Class 0x6C) */
+        variable_type_object_omron_register(server.registry, &server);
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Registered Omron Variable Type Object (Class 0x6C)");
     }
 
-    /* Omron support disabled - this server simulates Micro800, not Omron
-    server.omron_registry = omron_registry_create();
-    if(!server.omron_registry) {
-        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to create Omron registry");
-        args_free(&args_result);
-        cip_registry_destroy(server.registry);
-        socket_cleanup();
-        return EXIT_FAILURE;
+    /* Register Omron objects (if PLC type is Omron) */
+    if(server.plc_type == PLC_TYPE_OMRON) {
+        tag_name_server_omron_register(server.registry, &server);
+        variable_object_omron_register(server.registry, &server);
+
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Omron object model registered");
     }
-    tag_name_server_omron_register(server.registry, server.omron_registry);
-    variable_object_omron_register(server.registry, server.omron_registry);
-    variable_type_object_omron_register(server.registry, server.omron_registry);
-    */
-    server.omron_registry = NULL;
 
     /* Initialize tag list (will be populated below with both UDT-based and regular tags) */
     server.tags = NULL;
     tag_def_t *last_tag = NULL;
 
-    /* Create UDT-based tags FIRST (Motor type) if Motor UDT exists */
+    /* ===== PHASE 6: TAG PARSING (UNIFIED FOR ALL PLC TYPES) ===== */
+    /* Parse --tag arguments (format: name:type[dim1,dim2,dim3]) */
+    size_t tag_count_from_args = args_get_count(&args_result, "tag");
+
+    for(size_t i = 0; i < tag_count_from_args; i++) {
+        args_value_t val = args_get_at(&args_result, "tag", i);
+        if(!val.present) {
+            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to get tag argument at index %zu", i);
+            continue;
+        }
+
+        const char *tag_str = val.value.string_val;
+
+        /* Parse "name:type[dims]" format */
+        char *colon_pos = strchr(tag_str, ':');
+        if(!colon_pos) {
+            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Invalid tag format (missing ':'): %s", tag_str);
+            continue;
+        }
+
+        /* Extract tag name */
+        char tag_name[256];
+        size_t name_len = colon_pos - tag_str;
+        if(name_len >= sizeof(tag_name)) {
+            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Tag name too long: %s", tag_str);
+            continue;
+        }
+        strncpy(tag_name, tag_str, name_len);
+        tag_name[name_len] = '\0';
+
+        /* Parse type[dims] */
+        const char *type_and_dims = colon_pos + 1;
+        char *bracket_pos = strchr(type_and_dims, '[');
+
+        char type_name[64];
+        if(bracket_pos) {
+            size_t type_len = bracket_pos - type_and_dims;
+            if(type_len >= sizeof(type_name)) {
+                pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Type name too long: %s", tag_str);
+                continue;
+            }
+            strncpy(type_name, type_and_dims, type_len);
+            type_name[type_len] = '\0';
+        } else {
+            /* No dimensions specified, just type */
+            if(strlen(type_and_dims) >= sizeof(type_name)) {
+                pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Type name too long: %s", tag_str);
+                continue;
+            }
+            strcpy(type_name, type_and_dims);
+        }
+
+        /* Look up type: first check built-in types */
+        uint16_t tag_type_code = 0;
+        size_t elem_size = 0;
+        uint16_t udt_id = 0;
+
+        /* Check built-in types */
+        for(size_t j = 0; TYPE_MAP[j].name != NULL; j++) {
+            if(strcmp(type_name, TYPE_MAP[j].name) == 0) {
+                tag_type_code = TYPE_MAP[j].symbol_type;
+                elem_size = TYPE_MAP[j].element_size;
+                break;
+            }
+        }
+
+        /* If not found, check if it's a UDT */
+        if(tag_type_code == 0) {
+            udt_def_t *udt = udt_find_by_name(server.udts, type_name);
+            if(udt) {
+                udt_id = udt->udt_id;
+                tag_type_code = udt_id;  /* For UDT-based tags, type code is the UDT ID */
+                elem_size = udt->total_size;
+            } else {
+                pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Unknown type: %s", type_name);
+                continue;
+            }
+        }
+
+        /* Parse dimensions */
+        size_t dimensions[8];
+        size_t dim_count = 1;
+        size_t elem_count = 1;
+
+        if(bracket_pos) {
+            char *close_bracket = strchr(bracket_pos, ']');
+            if(!close_bracket) {
+                pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Invalid dimension syntax (missing ']'): %s", tag_str);
+                continue;
+            }
+
+            /* Parse dimension values (comma-separated) */
+            const char *dim_start = bracket_pos + 1;
+            char dim_str[256];
+            size_t dim_len = close_bracket - dim_start;
+            if(dim_len >= sizeof(dim_str)) {
+                pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Dimension string too long: %s", tag_str);
+                continue;
+            }
+            strncpy(dim_str, dim_start, dim_len);
+            dim_str[dim_len] = '\0';
+
+            /* Split on commas */
+            char *saveptr = NULL;
+            char *token = strtok_r(dim_str, ",", &saveptr);
+            dim_count = 0;
+            while(token && dim_count < 8) {
+                dimensions[dim_count] = (size_t)atoi(token);
+                if(dimensions[dim_count] == 0) {
+                    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Invalid dimension (must be > 0): %s", tag_str);
+                    goto next_tag;  /* Skip this tag */
+                }
+                elem_count *= dimensions[dim_count];
+                dim_count++;
+                token = strtok_r(NULL, ",", &saveptr);
+            }
+        } else {
+            /* Scalar tag */
+            dimensions[0] = 1;
+            dim_count = 1;
+            elem_count = 1;
+        }
+
+        /* Create tag */
+        tag_def_t *new_tag = tag_create(tag_name, tag_type_code, elem_size, elem_count);
+        if(!new_tag) {
+            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to create tag: %s", tag_name);
+            goto next_tag;
+        }
+
+        /* Set UDT ID and dimensions */
+        new_tag->udt_id = udt_id;
+        new_tag->dim_count = dim_count;
+        for(size_t j = 0; j < dim_count; j++) {
+            new_tag->dimensions[j] = dimensions[j];
+        }
+
+        /* Add to tag list */
+        if(!server.tags) {
+            server.tags = new_tag;
+        } else {
+            if(last_tag) { last_tag->next = new_tag; }
+        }
+        last_tag = new_tag;
+
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Created tag '%s' (type=%s, elem_size=%zu, elem_count=%zu)",
+              tag_name, type_name, elem_size, elem_count);
+
+        next_tag:
+            (void)0;  /* Label requires statement */
+    }
+
+    /* Create UDT-based tags FIRST (Motor type) if Motor UDT exists and no --tag args provided */
     if(server.udts) {
         for(size_t i = 1; i <= 5; i++) {
             char name[64];

@@ -35,7 +35,7 @@
 #include <string.h>
 #include "tag_name_server_omron.h"
 #include "../cip_message_router.h"
-#include "../../omron_storage.h"
+#include "../../tag_storage.h"
 #include "../../plc_context.h"
 #include "../../../utils/log.h"
 #include "../../../utils/buf.h"
@@ -45,7 +45,7 @@
  * ============================================================================ */
 
 typedef struct {
-    omron_registry_t *registry;
+    plc_context_t *plc;
 } tag_name_server_omron_context_t;
 
 static tag_name_server_omron_context_t *tns_context = NULL;
@@ -75,28 +75,28 @@ static util_err_t tag_name_server_service_get_attributes_all(uint8_t service, co
     (void)plc;
     (void)instance;
 
-    if(!tns_context || !tns_context->registry) {
-        pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_ERROR, "Get Attributes All: registry not initialized");
+    if(!tns_context || !tns_context->plc) {
+        pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_ERROR, "Get Attributes All: context not initialized");
         cip_build_response(response, service, CIP_STATUS_SERVICE_ERROR);
         return UTIL_EINTERNAL;
     }
 
-    /* Count variables */
-    size_t var_count = 0;
-    omron_variable_t *var = tns_context->registry->variables;
-    while(var) {
-        var_count++;
-        var = var->next;
+    /* Count tags */
+    size_t tag_count = 0;
+    tag_def_t *tag = tns_context->plc->tags;
+    while(tag) {
+        tag_count++;
+        tag = tag->next;
     }
 
-    pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Attributes All: returning count=%zu", var_count);
+    pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Attributes All: returning count=%zu", tag_count);
 
     /* Build response */
     cip_build_response(response, service, CIP_STATUS_OK);
 
     bool ok = true;
     ok &= buf_write_u16_le(response, "reserved", 0);
-    ok &= buf_write_u16_le(response, "count", (uint16_t)var_count);
+    ok &= buf_write_u16_le(response, "count", (uint16_t)tag_count);
 
     if(!ok) {
         pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_ERROR, "Get Attributes All: failed to write response");
@@ -139,8 +139,8 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
     (void)plc;
     (void)instance;
 
-    if(!tns_context || !tns_context->registry) {
-        pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_ERROR, "Get Instance List: registry not initialized");
+    if(!tns_context || !tns_context->plc) {
+        pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_ERROR, "Get Instance List: context not initialized");
         cip_build_response(response, service, CIP_STATUS_SERVICE_ERROR);
         return UTIL_EINTERNAL;
     }
@@ -168,9 +168,9 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
         return UTIL_EINVAL;
     }
 
-    /* Only support kind=2 (user variables) */
+    /* Only support kind=2 (user tags) */
     if(kind != 2) {
-        pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Instance List: kind=%u (only 2=user vars supported)",
+        pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Instance List: kind=%u (only 2=user tags supported)",
               kind);
         cip_build_response(response, service, CIP_STATUS_OK);
         bool ok = buf_write_u16_le(response, "returned_count", 0);
@@ -187,18 +187,18 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
     /* First pass: count matching records and determine if more exist */
     uint32_t returned_count = 0;
     uint8_t more_flag = 0;
-    omron_variable_t *var = tns_context->registry->variables;
+    tag_def_t *tag = tns_context->plc->tags;
 
     /* Skip to start_instance_id */
-    while(var && var->instance_id < start_instance_id) { var = var->next; }
+    while(tag && tag->instance_id < start_instance_id) { tag = tag->next; }
 
     /* Count how many we'll return and if more exist */
-    omron_variable_t *count_var = var;
-    while(count_var && returned_count < max_count) {
+    tag_def_t *count_tag = tag;
+    while(count_tag && returned_count < max_count) {
         returned_count++;
-        count_var = count_var->next;
+        count_tag = count_tag->next;
     }
-    if(count_var) { more_flag = 1; }
+    if(count_tag) { more_flag = 1; }
 
     /* Write header */
     bool ok = true;
@@ -213,14 +213,14 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
 
     /* Second pass: build records */
     uint32_t record_count = 0;
-    var = tns_context->registry->variables;
+    tag = tns_context->plc->tags;
 
     /* Skip to start_instance_id again */
-    while(var && var->instance_id < start_instance_id) { var = var->next; }
+    while(tag && tag->instance_id < start_instance_id) { tag = tag->next; }
 
     /* Build records up to max_count */
-    while(var && record_count < max_count) {
-        size_t name_len = strlen(var->name);
+    while(tag && record_count < max_count) {
+        size_t name_len = strlen(tag->name);
         size_t padded_name_len = ((name_len + 1) / 2) * 2; /* Pad to word boundary */
 
         /* Calculate record length in words:
@@ -232,26 +232,26 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
         /* Write record */
         ok &= buf_write_u16_le(response, "record_length", record_len_words);
         ok &= buf_write_u16_le(response, "class_id", 0x6B); /* Variable Object */
-        ok &= buf_write_u32_le(response, "instance_id", var->instance_id);
+        ok &= buf_write_u32_le(response, "instance_id", tag->instance_id);
         ok &= buf_write_u8(response, "name_length", (uint8_t)name_len);
 
         /* Write name with padding */
         uint8_t padded_name[256];
         memset(padded_name, 0, sizeof(padded_name));
-        memcpy(padded_name, var->name, name_len);
+        memcpy(padded_name, tag->name, name_len);
         ok &= buf_write_bytes(response, "name", padded_name, padded_name_len);
 
         if(!ok) {
             pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_ERROR, "Get Instance List: failed to write record for '%s'",
-                  var->name);
+                  tag->name);
             return buf_get_error(response);
         }
 
         pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Instance List: record %u - id=%u name='%s'", record_count,
-              var->instance_id, var->name);
+              tag->instance_id, tag->name);
 
         record_count++;
-        var = var->next;
+        tag = tag->next;
     }
 
     pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Instance List: returned %u records, more_flag=%u",
@@ -282,15 +282,15 @@ static cip_object_instance_t *tag_name_server_get_instance(uint32_t instance_id,
  * Registration
  * ============================================================================ */
 
-void tag_name_server_omron_register(cip_object_registry_t *registry, omron_registry_t *omron_registry) {
-    if(!registry || !omron_registry) { return; }
+void tag_name_server_omron_register(cip_object_registry_t *registry, plc_context_t *plc) {
+    if(!registry || !plc) { return; }
 
-    /* Store registry for service handlers */
+    /* Store PLC context for service handlers */
     if(!tns_context) {
         tns_context = (tag_name_server_omron_context_t *)calloc(1, sizeof(*tns_context));
         if(!tns_context) { return; }
     }
-    tns_context->registry = omron_registry;
+    tns_context->plc = plc;
 
     /* Create and register the object class */
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));

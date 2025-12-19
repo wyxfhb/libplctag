@@ -35,7 +35,7 @@
 #include <string.h>
 #include "variable_type_object_omron.h"
 #include "../cip_message_router.h"
-#include "../../omron_storage.h"
+#include "../../udt_storage.h"
 #include "../../plc_context.h"
 #include "../../../utils/log.h"
 #include "../../../utils/buf.h"
@@ -45,7 +45,7 @@
  * ============================================================================ */
 
 typedef struct {
-    omron_registry_t *registry;
+    plc_context_t *plc;
 } variable_type_object_omron_context_t;
 
 static variable_type_object_omron_context_t *vto_context = NULL;
@@ -63,8 +63,8 @@ typedef enum {
 typedef struct {
     vto_instance_type_t type;
     union {
-        omron_type_def_t *type_def;
-        omron_type_member_t *member;
+        udt_def_t *udt;
+        udt_member_t *member;
     } data;
 } vto_instance_data_t;
 
@@ -121,58 +121,77 @@ static util_err_t variable_type_service_get_attributes_all(uint8_t service, cons
 
     if(data->type == VTO_TYPE_DEF) {
         /* Type definition response */
-        omron_type_def_t *type_def = data->data.type_def;
+        udt_def_t *udt = data->data.udt;
 
         pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: type '%s' id=%u size=%zu members=%zu",
-              type_def->type_name, type_def->type_instance_id, type_def->total_size, type_def->member_count);
+              udt->name, udt->udt_id, udt->total_size, udt->member_count);
 
         /* Size, type code, array info, reserved */
-        ok &= buf_write_u32_le(response, "size", (uint32_t)type_def->total_size);
-        ok &= buf_write_u8(response, "type_code", (uint8_t)(type_def->type_code & 0xFF));
+        ok &= buf_write_u32_le(response, "size", (uint32_t)udt->total_size);
+        ok &= buf_write_u8(response, "type_code", 0xA0);  /* Structure type code */
         ok &= buf_write_u8(response, "array_type", 0);
         ok &= buf_write_u8(response, "reserved1", 0);
         ok &= buf_write_u8(response, "reserved2", 0);
 
         /* Member count and CRC */
-        ok &= buf_write_u16_le(response, "member_count", (uint16_t)type_def->member_count);
+        ok &= buf_write_u16_le(response, "member_count", (uint16_t)udt->member_count);
         ok &= buf_write_u16_le(response, "reserved3", 0);
-        ok &= buf_write_u16_le(response, "crc_code", type_def->crc_code);
+        ok &= buf_write_u16_le(response, "crc_code", 0);  /* CRC not computed in unified storage */
 
         /* Type name with padding */
-        size_t name_len = strlen(type_def->type_name);
+        size_t name_len = strlen(udt->name);
         ok &= buf_write_u8(response, "name_length", (uint8_t)name_len);
         size_t padded_name_len = ((name_len + 1) / 2) * 2;
         uint8_t padded_name[256];
         memset(padded_name, 0, sizeof(padded_name));
-        memcpy(padded_name, type_def->type_name, name_len);
+        memcpy(padded_name, udt->name, name_len);
         ok &= buf_write_bytes(response, "type_name", padded_name, padded_name_len);
 
         /* First member ID and nesting type ID */
-        ok &= buf_write_u32_le(response, "first_member_id", type_def->first_member_id);
+        /* For unified storage, member instance IDs are encoded as (udt_id << 16) | member_index */
+        uint32_t first_member_id = (udt->member_count > 0) ? ((udt->udt_id << 16) | 0) : 0;
+        ok &= buf_write_u32_le(response, "first_member_id", first_member_id);
         ok &= buf_write_u32_le(response, "nesting_type_id", 0);
 
     } else {
         /* Type member response */
-        omron_type_member_t *member = data->data.member;
+        udt_member_t *member = data->data.member;
 
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: member '%s' id=%u size=%zu offset=%zu next=%u",
-              member->member_name, member->member_instance_id, member->member_size, member->member_offset,
-              member->next_member_id);
+        /* We need to find the parent UDT to get the next member ID */
+        /* For now, we'll calculate it from the instance_id encoding */
+        uint32_t parent_udt_id = instance->instance_id >> 16;
+        uint16_t member_index = instance->instance_id & 0xFFFF;
+
+        /* Find parent UDT to determine next member */
+        uint32_t next_member_id = 0;
+        if(vto_context && vto_context->plc) {
+            udt_def_t *parent_udt = vto_context->plc->udts;
+            while(parent_udt) {
+                if(parent_udt->udt_id == parent_udt_id && member_index + 1 < parent_udt->member_count) {
+                    next_member_id = ((parent_udt_id << 16) | (member_index + 1));
+                    break;
+                }
+                parent_udt = parent_udt->next;
+            }
+        }
+
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: member '%s' id=0x%X size=%zu offset=%zu next=0x%X",
+              member->name, instance->instance_id, member->element_length, member->byte_offset, next_member_id);
 
         /* Size, type code, array info, reserved */
-        ok &= buf_write_u32_le(response, "size", (uint32_t)member->member_size);
-        ok &= buf_write_u8(response, "type_code", (uint8_t)member->member_type);
+        ok &= buf_write_u32_le(response, "size", (uint32_t)member->element_length);
+        ok &= buf_write_u8(response, "type_code", (uint8_t)member->symbol_type);
         ok &= buf_write_u8(response, "array_type", 0);
         ok &= buf_write_u16_le(response, "reserved1", 0);
 
         /* Offset within parent structure */
-        ok &= buf_write_u32_le(response, "offset", (uint32_t)member->member_offset);
+        ok &= buf_write_u32_le(response, "offset", (uint32_t)member->byte_offset);
 
         /* Next member ID (for linked list traversal) */
-        ok &= buf_write_u32_le(response, "next_member_id", member->next_member_id);
+        ok &= buf_write_u32_le(response, "next_member_id", next_member_id);
 
         /* Nesting type ID (if this member is a structure) */
-        ok &= buf_write_u32_le(response, "nesting_type_id", member->nesting_type_id);
+        ok &= buf_write_u32_le(response, "nesting_type_id", 0);  /* TODO: Support nested types */
     }
 
     if(!ok) {
@@ -188,54 +207,63 @@ static util_err_t variable_type_service_get_attributes_all(uint8_t service, cons
  * ============================================================================ */
 
 static cip_object_instance_t *variable_type_get_instance(uint32_t instance_id, plc_context_t *plc) {
-    (void)plc;
+    if(!vto_context || !vto_context->plc) { return NULL; }
 
-    if(!vto_context || !vto_context->registry) { return NULL; }
+    /* Check if this is a type definition instance (udt_id as instance_id) */
+    udt_def_t *udt = vto_context->plc->udts;
+    while(udt) {
+        if(udt->udt_id == instance_id) {
+            /* Allocate instance data */
+            vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
+            if(!data) { return NULL; }
+            data->type = VTO_TYPE_DEF;
+            data->data.udt = udt;
 
-    /* Try to find as a type definition first */
-    omron_type_def_t *type_def = omron_type_find_by_id(vto_context->registry, instance_id);
-    if(type_def) {
-        /* Allocate instance data */
-        vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
-        if(!data) { return NULL; }
-        data->type = VTO_TYPE_DEF;
-        data->data.type_def = type_def;
+            /* Allocate instance structure */
+            cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
+            if(!instance) {
+                free(data);
+                return NULL;
+            }
 
-        /* Allocate instance structure */
-        cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
-        if(!instance) {
-            free(data);
-            return NULL;
+            instance->object_class = NULL; /* Will be set by registry */
+            instance->instance_id = instance_id;
+            instance->instance_data = (void *)data;
+
+            return instance;
         }
-
-        instance->object_class = NULL; /* Will be set by registry */
-        instance->instance_id = instance_id;
-        instance->instance_data = (void *)data;
-
-        return instance;
+        udt = udt->next;
     }
 
-    /* Try to find as a type member */
-    omron_type_member_t *member = omron_member_find_by_id(vto_context->registry, instance_id);
-    if(member) {
-        /* Allocate instance data */
-        vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
-        if(!data) { return NULL; }
-        data->type = VTO_TYPE_MEMBER;
-        data->data.member = member;
+    /* Check if this is a type member instance (encoded as (udt_id << 16) | member_index) */
+    uint32_t parent_udt_id = instance_id >> 16;
+    uint16_t member_index = instance_id & 0xFFFF;
 
-        /* Allocate instance structure */
-        cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
-        if(!instance) {
-            free(data);
-            return NULL;
+    if(parent_udt_id > 0 && member_index < 0xFFFF) {
+        udt = vto_context->plc->udts;
+        while(udt) {
+            if(udt->udt_id == parent_udt_id && member_index < udt->member_count) {
+                /* Allocate instance data */
+                vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
+                if(!data) { return NULL; }
+                data->type = VTO_TYPE_MEMBER;
+                data->data.member = &udt->members[member_index];
+
+                /* Allocate instance structure */
+                cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
+                if(!instance) {
+                    free(data);
+                    return NULL;
+                }
+
+                instance->object_class = NULL; /* Will be set by registry */
+                instance->instance_id = instance_id;
+                instance->instance_data = (void *)data;
+
+                return instance;
+            }
+            udt = udt->next;
         }
-
-        instance->object_class = NULL; /* Will be set by registry */
-        instance->instance_id = instance_id;
-        instance->instance_data = (void *)data;
-
-        return instance;
     }
 
     return NULL;
@@ -245,15 +273,15 @@ static cip_object_instance_t *variable_type_get_instance(uint32_t instance_id, p
  * Registration
  * ============================================================================ */
 
-void variable_type_object_omron_register(cip_object_registry_t *registry, omron_registry_t *omron_registry) {
-    if(!registry || !omron_registry) { return; }
+void variable_type_object_omron_register(cip_object_registry_t *registry, plc_context_t *plc) {
+    if(!registry || !plc) { return; }
 
-    /* Store registry for service handlers */
+    /* Store PLC context for service handlers and instance lookup */
     if(!vto_context) {
         vto_context = (variable_type_object_omron_context_t *)calloc(1, sizeof(*vto_context));
         if(!vto_context) { return; }
     }
-    vto_context->registry = omron_registry;
+    vto_context->plc = plc;
 
     /* Create and register the object class */
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));
