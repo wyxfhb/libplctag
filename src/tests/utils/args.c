@@ -81,6 +81,145 @@ static bool parse_float(char *str, double *out) {
 }
 
 /**
+ * Read a config file and return an array of arguments.
+ * Each line in the file should be a single argument (e.g., --flag=value).
+ * Empty lines and lines starting with # are skipped.
+ *
+ * Returns: Dynamically allocated array of argument strings, or NULL on error.
+ *          The caller must free this array with free().
+ *          *arg_count will be set to the number of arguments (not counting program name).
+ */
+static char **read_config_file(const char *filename, int *arg_count) {
+    if(!filename || !arg_count) { return NULL; }
+
+    *arg_count = 0;
+    FILE *f = fopen(filename, "r");
+    if(!f) {
+        pdlog(LOG_MODULE_ARGS, LOG_LEVEL_WARN, "args: could not open config file '%s'", filename);
+        return NULL;
+    }
+
+    /* First pass: count non-empty, non-comment lines */
+    int count = 0;
+    char line[1024];
+    while(fgets(line, sizeof(line), f)) {
+        /* Remove trailing newline */
+        char *nl = strchr(line, '\n');
+        if(nl) { *nl = '\0'; }
+
+        /* Skip empty lines and comments */
+        char *trimmed = line;
+        while(*trimmed && isspace((unsigned char)*trimmed)) { trimmed++; }
+
+        if(*trimmed && *trimmed != '#') { count++; }
+    }
+
+    if(count == 0) {
+        fclose(f);
+        pdlog(LOG_MODULE_ARGS, LOG_LEVEL_DETAIL, "args: config file '%s' is empty or contains only comments", filename);
+        return NULL;
+    }
+
+    /* Allocate array for arguments */
+    char **argv = malloc(sizeof(char *) * (count + 1)); /* +1 for NULL terminator */
+    if(!argv) {
+        fclose(f);
+        pdlog(LOG_MODULE_ARGS, LOG_LEVEL_ERROR, "args: failed to allocate memory for config file arguments");
+        return NULL;
+    }
+
+    /* Second pass: read lines and store */
+    rewind(f);
+    int idx = 0;
+    while(fgets(line, sizeof(line), f) && idx < count) {
+        /* Remove trailing newline */
+        char *nl = strchr(line, '\n');
+        if(nl) { *nl = '\0'; }
+
+        /* Trim leading whitespace */
+        char *trimmed = line;
+        while(*trimmed && isspace((unsigned char)*trimmed)) { trimmed++; }
+
+        /* Skip empty lines and comments */
+        if(!*trimmed || *trimmed == '#') { continue; }
+
+        /* Duplicate the line and store */
+        char *arg = malloc(strlen(trimmed) + 1);
+        if(!arg) {
+            pdlog(LOG_MODULE_ARGS, LOG_LEVEL_ERROR, "args: failed to allocate memory for config file argument");
+            /* Free what we've allocated so far */
+            for(int i = 0; i < idx; i++) { free(argv[i]); }
+            free(argv);
+            fclose(f);
+            return NULL;
+        }
+        strcpy(arg, trimmed);
+        argv[idx++] = arg;
+    }
+
+    fclose(f);
+    argv[idx] = NULL; /* NULL terminate */
+    *arg_count = idx;
+
+    pdlog(LOG_MODULE_ARGS, LOG_LEVEL_DETAIL, "args: read %d arguments from config file '%s'", *arg_count, filename);
+    return argv;
+}
+
+/**
+ * Merge config file arguments with command-line arguments.
+ * Config file arguments come first, then command-line arguments (which can override).
+ *
+ * Returns: Dynamically allocated merged argv array.
+ *          *merged_argc will be set to total count (including program name at index 0).
+ *          The caller must free individual argument strings and the array itself.
+ */
+static char **merge_config_and_argv(const char *config_filename, int argc, char *argv[], int *merged_argc) {
+    if(!argv || !merged_argc || !config_filename) { return NULL; }
+
+    int config_argc = 0;
+    char **config_argv = read_config_file(config_filename, &config_argc);
+
+    /* Total size: program name + config args + original args (minus program name) */
+    int total_count = 1 + config_argc + (argc - 1);
+
+    char **merged = malloc(sizeof(char *) * total_count);
+    if(!merged) {
+        pdlog(LOG_MODULE_ARGS, LOG_LEVEL_ERROR, "args: failed to allocate merged argv");
+        if(config_argv) {
+            for(int i = 0; config_argv[i]; i++) { free(config_argv[i]); }
+            free(config_argv);
+        }
+        return NULL;
+    }
+
+    /* Copy program name */
+    merged[0] = argv[0];
+
+    /* Copy config file arguments */
+    int idx = 1;
+    if(config_argv) {
+        for(int i = 0; config_argv[i]; i++) { merged[idx++] = config_argv[i]; }
+    }
+
+    /* Copy command-line arguments (skip program name and config-file flag) */
+    for(int i = 1; i < argc; i++) {
+        /* Skip --config-file argument itself */
+        if(strncmp(argv[i], "--config-file=", strlen("--config-file=")) == 0) { continue; }
+
+        merged[idx++] = argv[i];
+    }
+
+    *merged_argc = idx;
+
+    pdlog(LOG_MODULE_ARGS, LOG_LEVEL_DETAIL, "args: merged %d config args + %d cli args = %d total", config_argc, argc - 1,
+          *merged_argc - 1);
+
+    if(config_argv) { free(config_argv); } /* Free the intermediate array, but not the strings */
+
+    return merged;
+}
+
+/**
  * Parse a single argument value according to its type
  */
 static bool parse_value(args_value_t *val, char *str, args_flag_def_t *flag_def) {
@@ -177,9 +316,36 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
         }
     }
 
-    // Parse arguments
+    /* Check for --config-file argument and merge if present */
+    char *config_filename = NULL;
+    char **merged_argv = NULL;
+    int merged_argc = argc;
+
     for(int i = 1; i < argc; i++) {
         char *arg = argv[i];
+        if(strncmp(arg, "--config-file=", strlen("--config-file=")) == 0) {
+            config_filename = arg + strlen("--config-file=");
+            pdlog(LOG_MODULE_ARGS, LOG_LEVEL_INFO, "args_parse: found config file argument: %s", config_filename);
+
+            /* Merge config file and command-line arguments */
+            merged_argv = merge_config_and_argv(config_filename, argc, argv, &merged_argc);
+            if(!merged_argv) {
+                pdlog(LOG_MODULE_ARGS, LOG_LEVEL_WARN, "args_parse: failed to merge config file (will try command-line only)");
+                /* Continue without config file */
+                merged_argv = NULL;
+                merged_argc = argc;
+            }
+            break;
+        }
+    }
+
+    /* Use merged argv if available, otherwise use original argv */
+    char **parse_argv = merged_argv ? merged_argv : argv;
+    int parse_argc = merged_argc;
+
+    // Parse arguments
+    for(int i = 1; i < parse_argc; i++) {
+        char *arg = parse_argv[i];
         pdlog(LOG_MODULE_ARGS, LOG_LEVEL_DETAIL, "args_parse: processing arg[%d]=%s", i, arg);
 
         // Must start with --
@@ -188,6 +354,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
             result->error = UTIL_EARGS_INVALID_FORMAT;
             result->error_detail = "arguments must start with '--'";
             result->error_flag_index = -1;
+
+            /* Clean up merged argv if it was allocated */
+            if(merged_argv) {
+                for(int j = 1; j < merged_argc; j++) {
+                    if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                }
+                free(merged_argv);
+            }
             return UTIL_EARGS_INVALID_FORMAT;
         }
 
@@ -205,6 +379,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
                 pdlog(LOG_MODULE_ARGS, LOG_LEVEL_ERROR, "args_parse: flag name too long");
                 result->error = UTIL_EARGS_INVALID_FORMAT;
                 result->error_detail = "flag name too long";
+
+                /* Clean up merged argv if it was allocated */
+                if(merged_argv) {
+                    for(int j = 1; j < merged_argc; j++) {
+                        if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                    }
+                    free(merged_argv);
+                }
                 return UTIL_EARGS_INVALID_FORMAT;
             }
             strncpy(flag_name, name_start, name_len);
@@ -233,6 +415,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
             result->error_detail = "flag not recognized";
             // result->error_debug_name = flag_name;
             result->error_flag_index = -1;
+
+            /* Clean up merged argv if it was allocated */
+            if(merged_argv) {
+                for(int j = 1; j < merged_argc; j++) {
+                    if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                }
+                free(merged_argv);
+            }
             return UTIL_EARGS_UNKNOWN_FLAG;
         }
 
@@ -246,6 +436,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
             result->error_detail = "flag cannot appear multiple times";
             // result->error_debug_name = flag_def->debug_name;
             result->error_flag_index = flag_index;
+
+            /* Clean up merged argv if it was allocated */
+            if(merged_argv) {
+                for(int j = 1; j < merged_argc; j++) {
+                    if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                }
+                free(merged_argv);
+            }
             return UTIL_EARGS_DUPLICATE;
         }
 
@@ -258,6 +456,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
             result->error_detail = "value failed to parse for this type";
             // result->error_debug_name = flag_def->debug_name;
             result->error_flag_index = flag_index;
+
+            /* Clean up merged argv if it was allocated */
+            if(merged_argv) {
+                for(int j = 1; j < merged_argc; j++) {
+                    if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                }
+                free(merged_argv);
+            }
             return UTIL_EARGS_INVALID_VALUE;
         }
 
@@ -275,6 +481,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
                 result->error_detail = "too many values for repeated flag";
                 // result->error_debug_name = flag_def->debug_name;
                 result->error_flag_index = flag_index;
+
+                /* Clean up merged argv if it was allocated */
+                if(merged_argv) {
+                    for(int j = 1; j < merged_argc; j++) {
+                        if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                    }
+                    free(merged_argv);
+                }
                 return UTIL_ERESOURCE;
             }
             repeat->values[repeat->count++] = val;
@@ -298,6 +512,14 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
                     result->error_detail = "required flag not provided";
                     // result->error_debug_name = flags[i].debug_name;
                     result->error_flag_index = (int)i;
+
+                    /* Clean up merged argv if it was allocated */
+                    if(merged_argv) {
+                        for(int j = 1; j < merged_argc; j++) {
+                            if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                        }
+                        free(merged_argv);
+                    }
                     return UTIL_EARGS_MISSING_REQUIRED;
                 }
             }
@@ -310,11 +532,27 @@ util_err_t args_parse(int argc, char *argv[], args_flag_def_t *flags, size_t fla
                     result->error_detail = "required flag not provided";
                     // result->error_debug_name = flags[i].debug_name;
                     result->error_flag_index = (int)i;
+
+                    /* Clean up merged argv if it was allocated */
+                    if(merged_argv) {
+                        for(int j = 1; j < merged_argc; j++) {
+                            if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+                        }
+                        free(merged_argv);
+                    }
                     return UTIL_EARGS_MISSING_REQUIRED;
                 }
                 // Note: defaults are not applied to ARGS_MULTIPLE flags
             }
         }
+    }
+
+    /* Clean up merged argv if it was allocated - success path */
+    if(merged_argv) {
+        for(int j = 1; j < merged_argc; j++) {
+            if(merged_argv[j] != argv[0]) { free(merged_argv[j]); }
+        }
+        free(merged_argv);
     }
 
     pdlog(LOG_MODULE_ARGS, LOG_LEVEL_INFO, "args_parse: exit (success)");
