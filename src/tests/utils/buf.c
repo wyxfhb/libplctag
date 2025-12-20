@@ -546,5 +546,3 @@ bool buf_write_bytes(buf_t *b, const char *field_name, const uint8_t *data, size
     b->write += len;
     return true;
 }
-
-const char *buf_error_string(util_err_t e) { return util_err_str(e); }

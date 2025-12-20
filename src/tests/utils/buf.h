@@ -364,8 +364,6 @@ bool buf_write_u64_be(buf_t *b, const char *field_name, uint64_t v);
 bool buf_write_u64_le(buf_t *b, const char *field_name, uint64_t v);
 bool buf_write_bytes(buf_t *b, const char *field_name, const uint8_t *data, size_t len);
 
-/* Utils */
-const char *buf_error_string(util_err_t e);
 
 #ifdef __cplusplus
 }
