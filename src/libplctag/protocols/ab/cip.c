@@ -110,7 +110,7 @@ static int parse_link_address(const char *path, size_t *path_index, uint8_t port
                               int *is_dhp, uint8_t *dhp_src, uint8_t *dhp_dest) {
     size_t p_idx = *path_index;
     size_t c_idx = *conn_path_index;
-    int rc = PLCTAG_STATUS_OK;
+    // int rc = PLCTAG_STATUS_OK;
 
     /* Skip spaces */
     while(path[p_idx] == ' ') { p_idx++; }
@@ -273,6 +273,9 @@ static int parse_link_address(const char *path, size_t *path_index, uint8_t port
                 pdebug(DEBUG_MODULE_AB_CIP, DEBUG_WARN, "Link address %d is out of bounds (0-255).", val);
                 return PLCTAG_ERR_OUT_OF_BOUNDS;
             }
+
+            /* Encode the port number */
+            conn_path[c_idx++] = port_num;
 
             /* Encode the link */
             if(val <= 14) {
