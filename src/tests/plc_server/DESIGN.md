@@ -1375,10 +1375,10 @@ python3 test_client.py --host=127.0.0.1 --port=44818 --plc=controllogix
 /* Symbol Object Services (ControlLogix) */
 #define CIP_SRV_READ_TAG            0x4C
 #define CIP_SRV_WRITE_TAG           0x4D
-#define CIP_SRV_READ_TAG_FRAG       0x52
-#define CIP_SRV_WRITE_TAG_FRAG      0x53
-#define CIP_SRV_LIST_TAGS           0x55
-#define CIP_SRV_GET_INSTANCE_LIST   0x5F
+#define CIP_SRV_READ_TAG_FRAG_AB       0x52
+#define CIP_SRV_WRITE_TAG_FRAG_AB      0x53
+#define CIP_SRV_INSTANCE_ATTRS_AB           0x55
+#define CIP_SRV_GET_INSTANCE_LIST_OMRON   0x5F
 ```
 
 ---
