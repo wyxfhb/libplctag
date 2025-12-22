@@ -39,8 +39,11 @@ extern "C" {
 #include <stdint.h>
 #include "../../../utils/err.h"
 #include "../../../utils/buf.h"
-#include "../../context/context_registry.h"
 #include "cip_defs.h"
+
+/* Forward declarations to avoid circular dependencies */
+typedef struct ab_plc_context_s ab_plc_context_t;
+typedef struct client_context_s client_context_t;
 
 /* ============================================================================
  * CIP Type Definitions
@@ -66,12 +69,13 @@ typedef struct cip_path_s cip_path_t;
  * - path: Parsed CIP path (class/instance/attribute)
  * - input: Request data (positioned after standard CIP headers)
  * - output: Response buffer (positioned at start of payload)
- * - context_reg: Context registry for accessing PLC, client, and other contexts
+ * - plc: PLC context with tags and CIP registry
+ * - client: Client connection context with session and connection state
  *
  * Handlers should:
  * - Return UTIL_OK on success
  * - Set output buffer error on failure
- * - Not modify the context registry or other handlers
+ * - Not modify the PLC context state
  */
 
 typedef util_err_t (*cip_service_handler_t)(
@@ -79,7 +83,8 @@ typedef util_err_t (*cip_service_handler_t)(
     cip_path_t *path,
     buf_t *input,
     buf_t *output,
-    context_registry_t *context_reg
+    ab_plc_context_t *plc,
+    client_context_t *client
 );
 
 /* ============================================================================
@@ -158,7 +163,8 @@ util_err_t cip_class_registry_add_service(
  * @param service_code Service code to dispatch.
  * @param input Request data buffer.
  * @param output Response data buffer.
- * @param context_reg Context registry passed to handler.
+ * @param plc PLC context passed to handler.
+ * @param client Client connection context passed to handler.
  * @return UTIL_OK if handler succeeded, error code otherwise.
  */
 util_err_t cip_class_registry_dispatch_service(
@@ -167,7 +173,8 @@ util_err_t cip_class_registry_dispatch_service(
     cip_service_code_t service_code,
     buf_t *input,
     buf_t *output,
-    context_registry_t *context_reg
+    ab_plc_context_t *plc,
+    client_context_t *client
 );
 
 #ifdef __cplusplus

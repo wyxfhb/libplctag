@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,26 +33,38 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
-
 #include <stdint.h>
 
 /* ============================================================================
  * Common Packet Format (CPF) Item Types
  * ============================================================================ */
 
-#define CPF_ITEM_NULL                   0x0000  /* Null item - no data */
-#define CPF_ITEM_ADDRESS_INFO           0x8000  /* Address information (target) */
-#define CPF_ITEM_CONNECTED_DATA         0xB1    /* Connected data */
-#define CPF_ITEM_UNCONNECTED_DATA       0xB2    /* Unconnected data (CIP service) */
-#define CPF_ITEM_SOCK_ADDR_INFO_OPT     0x8001  /* Socket address info (optional) */
+#define CPF_ITEM_NULL ((uint16_t)0x0000)               /* Null item - no data */
+#define CPF_ITEM_NULL_ADDRESS ((uint16_t)0x0000)       /* Null Address item */
+#define CPF_ITEM_ADDRESS_INFO ((uint16_t)0x8000)       /* Address information (target) */
+#define CPF_ITEM_CONNECTED_ADDRESS ((uint16_t)0x00A1)  /* Connected Address item */
+#define CPF_ITEM_CONNECTED_DATA ((uint16_t)0x00B1)     /* Connected data */
+#define CPF_ITEM_UNCONNECTED_DATA ((uint16_t)0x00B2)   /* Unconnected data (CIP service) */
+#define CPF_ITEM_INDENTITY_INFO ((uint16_t)0x8000)     /* Identity Object info */
+#define CPF_ITEM_SOCK_ADDR_INFO_OPT ((uint16_t)0x0001) /* Socket address info (optional) */
 
 /* ============================================================================
  * CPF Header Information
  * ============================================================================ */
 
-/* CPF Header size (command + length field) */
-#define CPF_HEADER_SIZE 4
+#define CPF_MAX_ITEMS ((size_t)8) /* Arbitrary limit on number of items in CPF */
 
-/* Item header size (type + length) */
-#define CPF_ITEM_HEADER_SIZE 4
+/* CPF Header size (interface handle + router timeout + item count) */
+#define CPF_HEADER_SIZE 8
+
+/* ===========================================================================
+ * CPF Item Size Definitions
+ * =========================================================================== */
+
+/* address item sizes */
+#define CPF_ITEM_UCONN_ADDRESS_SIZE ((size_t)4) /* type + length, both with value zero */
+#define CPF_ITEM_CONN_ADDRESS_SIZE ((size_t)8)  /* type + length + connection ID (4 bytes in our case)*/
+
+/* data item sizes */
+#define CPF_ITEM_CONN_DATA_SIZE ((size_t)6)  /* type + length + conn sequence number */
+#define CPF_ITEM_UCONN_DATA_SIZE ((size_t)4) /* type + length */

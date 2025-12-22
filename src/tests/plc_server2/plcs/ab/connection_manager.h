@@ -32,49 +32,19 @@
  ***************************************************************************/
 
 #pragma once
-#ifdef __cplusplus
-extern "C" {
-#endif
 
-#include <stdint.h>
-#include "../../../utils/buf.h"
-#include "../../../utils/err.h"
-#include "eip_defs.h"
-
-/* Forward declarations to avoid circular dependencies */
-typedef struct ab_plc_context_s ab_plc_context_t;
-typedef struct client_context_s client_context_t;
-
-/* ============================================================================
- * EIP Protocol Functions
- * ============================================================================ */
+#include "../../protocols/cip/cip_registry.h"
 
 /**
- * @brief Frame check callback for socket_read_yield
+ * @brief Register Connection Manager Object (Class 0x06)
  *
- * Checks if a complete EIP packet is available in the buffer.
+ * Registers a Connection Manager Object for managing connections.
+ * Supports the following services:
+ *   - Forward Open (0x54)
+ *   - Forward Open Extended (0x5B)
+ *   - Forward Close (0x4E)
  *
- * @param buf Buffer to check
- * @param context Unused (NULL)
- * @return UTIL_OK if complete frame available, UTIL_EAGAIN if need more data,
- *         error code on invalid frame
- */
-util_err_t eip_frame_check(buf_t *buf, void *context);
-
-/**
- * @brief Main EIP dispatcher
- *
- * Routes EIP commands to appropriate handlers.
- * Parses request header, dispatches by command code, builds response.
- *
- * @param input Buffer positioned at start of EIP packet (will advance read cursor)
- * @param output Buffer to write response to (cleared before use)
- * @param plc PLC context with tags and CIP registry
- * @param client Client connection context with session and connection state
+ * @param registry Registry to register handlers in
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t eip_dispatch(buf_t *input, buf_t *output, ab_plc_context_t *plc, client_context_t *client);
-
-#ifdef __cplusplus
-}
-#endif
+util_err_t connection_manager_register(cip_class_registry_t *registry);

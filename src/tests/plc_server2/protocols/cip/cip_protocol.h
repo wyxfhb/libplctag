@@ -39,10 +39,13 @@ extern "C" {
 #include <stdint.h>
 #include "../../../utils/buf.h"
 #include "../../../utils/err.h"
-#include "../../context/context_registry.h"
 #include "cip_defs.h"
 #include "cip_registry.h"
 #include "cip_path.h"
+
+/* Forward declarations to avoid circular dependencies */
+typedef struct ab_plc_context_s ab_plc_context_t;
+typedef struct client_context_s client_context_t;
 
 /* ============================================================================
  * CIP Request Structure
@@ -78,10 +81,14 @@ util_err_t cip_parse_request(buf_t *input, cip_request_t *request);
  *
  * @param input Buffer positioned at start of CIP message
  * @param output Buffer to write CIP response to
- * @param context_reg Context registry (contains CIP registry, client, PLC)
+ * @param plc PLC context with tags and CIP registry
+ * @param client Client connection context with session and connection state
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, context_registry_t *context_reg);
+util_err_t cip_dispatch(buf_t *input, buf_t *output, ab_plc_context_t *plc, client_context_t *client);
+
+/* Alias for compatibility */
+#define cip_message_router_dispatch cip_dispatch
 
 /**
  * @brief Build CIP response header

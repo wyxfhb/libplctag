@@ -94,12 +94,16 @@
  * ============================================================================ */
 
 #define CIP_STATUS_SUCCESS          0x00  /* Success */
-#define CIP_STATUS_INVALID_SERVICE  0x08  /* The service is not supported */
-#define CIP_STATUS_INVALID_PATH     0x20  /* Path segment error */
-#define CIP_STATUS_INVALID_DATA     0x04  /* Invalid parameter value */
+#define CIP_STATUS_OK               0x00  /* Alias for success */
+#define CIP_STATUS_INVALID_PARAM    0x04  /* Invalid parameter value */
 #define CIP_STATUS_NOT_FOUND        0x05  /* Object specified in the request is not available */
+#define CIP_STATUS_INVALID_SERVICE  0x08  /* The service is not supported */
 #define CIP_STATUS_NOT_ENOUGH_DATA  0x13  /* Not enough data in request */
 #define CIP_STATUS_REPLY_DATA_TOO_LARGE 0x01 /* Reply message is too large */
+#define CIP_STATUS_INVALID_PATH     0x20  /* Path segment error */
+#define CIP_STATUS_PATH_DEST_UNKNOWN 0x20 /* Path destination unknown */
+#define CIP_STATUS_INVALID_DATA     0x04  /* Invalid parameter value */
+#define CIP_STATUS_PARTIAL_TRANSFER 0x06  /* Partial transfer (fragmented data) */
 
 /* ============================================================================
  * CIP Instance Numbers

@@ -37,43 +37,57 @@ extern "C" {
 #endif
 
 #include <stdint.h>
-#include "../../../utils/buf.h"
-#include "../../../utils/err.h"
-#include "eip_defs.h"
-
-/* Forward declarations to avoid circular dependencies */
-typedef struct ab_plc_context_s ab_plc_context_t;
-typedef struct client_context_s client_context_t;
+#include <stdbool.h>
+#include "../../utils/buf.h"
 
 /* ============================================================================
- * EIP Protocol Functions
+ * Client Connection Context
+ * ============================================================================
+ *
+ * Per-client connection context stored in the context registry.
+ * Contains all state for a single client connection to the EtherNet/IP server.
+ */
+
+typedef struct client_context_s {
+    /* I/O Buffers - Fixed size for this connection */
+    uint8_t recv_buffer[8192];
+    uint8_t send_buffer[8192];
+    buf_t recv_buf;
+    buf_t send_buf;
+
+    /* EIP Session Information */
+    uint32_t session_handle;           /* EIP session handle from RegisterSession */
+    uint32_t client_serial_number;     /* Client serial number for tracking */
+
+    /* Connection Manager State */
+    uint32_t client_connection_id;     /* Client-assigned connection ID */
+    uint32_t server_connection_id;     /* Server-assigned connection ID */
+    uint16_t server_to_client_max_packet;  /* Max packet size for S2C flow */
+    bool is_forward_open;              /* Whether ForwardOpen is active */
+
+    /* Note: Reference to PLC context is obtained via:
+     * ab_plc_context_t *plc = context_registry_get(context_reg, CONTEXT_ID_PLC)
+     * Do NOT store direct pointer here to avoid lifecycle issues */
+
+} client_context_t;
+
+/* ============================================================================
+ * Client Context Lifecycle
  * ============================================================================ */
 
 /**
- * @brief Frame check callback for socket_read_yield
+ * @brief Create a new client context
  *
- * Checks if a complete EIP packet is available in the buffer.
- *
- * @param buf Buffer to check
- * @param context Unused (NULL)
- * @return UTIL_OK if complete frame available, UTIL_EAGAIN if need more data,
- *         error code on invalid frame
+ * @return Pointer to new client_context_t, or NULL on allocation failure
  */
-util_err_t eip_frame_check(buf_t *buf, void *context);
+client_context_t *client_context_create(void);
 
 /**
- * @brief Main EIP dispatcher
+ * @brief Destroy a client context and free all resources
  *
- * Routes EIP commands to appropriate handlers.
- * Parses request header, dispatches by command code, builds response.
- *
- * @param input Buffer positioned at start of EIP packet (will advance read cursor)
- * @param output Buffer to write response to (cleared before use)
- * @param plc PLC context with tags and CIP registry
- * @param client Client connection context with session and connection state
- * @return UTIL_OK on success, error code on failure
+ * @param context Client context to destroy
  */
-util_err_t eip_dispatch(buf_t *input, buf_t *output, ab_plc_context_t *plc, client_context_t *client);
+void client_context_destroy(client_context_t *context);
 
 #ifdef __cplusplus
 }

@@ -60,8 +60,8 @@ if [[ ! -d $TEST_DIR ]]; then
 fi
 
 # test for the executables.
-# Updated: ab_server is now plc_server
-EXECUTABLES="plc_server list_tags_logix string_non_standard_udt string_standard tag_rw2 test_fairness test_auto_sync test_callback test_callback_ex test_callback_ex_logix test_callback_ex_modbus test_modbus_multiple test_raw_cip test_reconnect_after_outage_async test_reconnect_after_outage_sync test_shutdown_cip test_shutdown_modbus test_shutdown_restart test_special test_string test_tag_attributes test_tag_type_attribute thread_stress"
+# Updated: ab_server is now plc_server2
+EXECUTABLES="plc_server2 list_tags_logix string_non_standard_udt string_standard tag_rw2 test_fairness test_auto_sync test_callback test_callback_ex test_callback_ex_logix test_callback_ex_modbus test_modbus_multiple test_raw_cip test_reconnect_after_outage_async test_reconnect_after_outage_sync test_shutdown_cip test_shutdown_modbus test_shutdown_restart test_special test_string test_tag_attributes test_tag_type_attribute thread_stress"
 # echo -n "  Checking for executables..."
 for EXECUTABLE in $EXECUTABLES
 do
@@ -76,7 +76,7 @@ done
 
 
 echo "Starting ControlLogix emulator for fast tests."
-{ $TEST_DIR/plc_server --debug=detail --plc-type=controllogix --path=1,0 "--tag=TestBigArray:DINT[2000]" "--tag=Test_Array_1:DINT[1000]" "--tag=Test_Array_2x3:DINT[2,3]" "--tag=Test_Array_2x3x4:DINT[2,3,4]" > "$LOG_DIR/logix_fast_emulator.log" 2>&1 & } 2>/dev/null
+{ $TEST_DIR/plc_server2 --debug=detail --plc-type=controllogix --path=1,0 "--tag=TestBigArray:DINT[2000]" "--tag=Test_Array_1:DINT[1000]" "--tag=Test_Array_2x3:DINT[2,3]" "--tag=Test_Array_2x3x4:DINT[2,3,4]" > "$LOG_DIR/logix_fast_emulator.log" 2>&1 & } 2>/dev/null
 EMULATOR_PID=$!
 if [ $EMULATOR_PID -le 0 ]; then
     echo "Unable to start ControlLogix emulator!"
@@ -180,13 +180,13 @@ fi
 
 
 # # echo "  Killing emulator."
-# kill_process plc_server
+# kill_process plc_server2
 
 # echo "Starting stand-alone tests."
 
 # let TEST++
 # echo -n "  Test $TEST: Test async reconnect after PLC outage... "
-# $VALGRIND$TEST_DIR/test_reconnect_after_outage_async "${TEST_DIR}/plc_server" > "$LOG_DIR/${TEST}_reconnect_after_outage_async.log" 2>&1
+# $VALGRIND$TEST_DIR/test_reconnect_after_outage_async "${TEST_DIR}/plc_server2" > "$LOG_DIR/${TEST}_reconnect_after_outage_async.log" 2>&1
 # if [ $? != 0 ]; then
 #     echo "FAILURE"
 #     let FAILURES++
@@ -197,7 +197,7 @@ fi
 
 # let TEST++
 # echo -n "  Test $TEST: Test sync reconnect after PLC outage... "
-# $VALGRIND$TEST_DIR/test_reconnect_after_outage_sync "${TEST_DIR}/plc_server" > "$LOG_DIR/${TEST}_reconnect_after_outage_sync.log" 2>&1
+# $VALGRIND$TEST_DIR/test_reconnect_after_outage_sync "${TEST_DIR}/plc_server2" > "$LOG_DIR/${TEST}_reconnect_after_outage_sync.log" 2>&1
 # if [ $? != 0 ]; then
 #     echo "FAILURE"
 #     let FAILURES++
@@ -208,7 +208,7 @@ fi
 
 
 # echo "Starting ControlLogix emulator for functional/slow tests."
-# { $VALGRIND$TEST_DIR/plc_server --plc-type=controllogix --path=1,0 "--tag=TestBigArray:DINT[2000]" "--tag=Test_Array_1:DINT[1000]" "--tag=Test_Array_2x3:DINT[2,3]" "--tag=Test_Array_2x3x4:DINT[2,3,4]" --delay=100 > "$LOG_DIR/logix_slow_emulator.log" 2>&1 & } 2>/dev/null
+# { $VALGRIND$TEST_DIR/plc_server2 --plc-type=controllogix --path=1,0 "--tag=TestBigArray:DINT[2000]" "--tag=Test_Array_1:DINT[1000]" "--tag=Test_Array_2x3:DINT[2,3]" "--tag=Test_Array_2x3x4:DINT[2,3,4]" --delay=100 > "$LOG_DIR/logix_slow_emulator.log" 2>&1 & } 2>/dev/null
 # EMULATOR_PID=$!
 # if [ $EMULATOR_PID -le 0 ]; then
 #     echo "Unable to start AB/ControlLogix emulator!"
@@ -255,11 +255,11 @@ fi
 
 
 # echo "  Killing emulator."
-# kill_process plc_server
+# kill_process plc_server2
 
 
 # echo "Starting Micro800 emulator for tests."
-# { $TEST_DIR/plc_server --debug=info --plc-type=micro800 "--tag=TestDINTArray:DINT[10]" > "$LOG_DIR/micro800_emulator.log" 2>&1 & } 2>/dev/null
+# { $TEST_DIR/plc_server2 --debug=info --plc-type=micro800 "--tag=TestDINTArray:DINT[10]" > "$LOG_DIR/micro800_emulator.log" 2>&1 & } 2>/dev/null
 # EMULATOR_PID=$!
 # if [ $EMULATOR_PID -le 0 ]; then
 #     # echo "FAILURE"
@@ -285,11 +285,11 @@ fi
 
 
 # echo "  Killing emulator."
-# kill_process plc_server
+# kill_process plc_server2
 
 
 # echo "Starting Omron emulator for tests."
-# { $TEST_DIR/plc_server --debug=info --plc-type=omron "--tag=TestDINTArray:DINT[10]" > "$LOG_DIR/omron_emulator.log" 2>&1 & } 2>/dev/null
+# { $TEST_DIR/plc_server2 --debug=info --plc-type=omron "--tag=TestDINTArray:DINT[10]" > "$LOG_DIR/omron_emulator.log" 2>&1 & } 2>/dev/null
 # EMULATOR_PID=$!
 # if [ $EMULATOR_PID -le 0 ]; then
 #     # echo "FAILURE"
@@ -314,11 +314,11 @@ fi
 # fi
 
 # echo "  Killing Omron emulator."
-# kill_process plc_server
+# kill_process plc_server2
 
 
 # echo "Starting MicroLogix emulator for tests."
-# { $TEST_DIR/plc_server --debug=info --plc-type=micrologix '--tag=B3[10]' '--tag=N7[10]' '--tag=L19[10]' > "$LOG_DIR/micrologix_emulator.log" 2>&1 & } 2>/dev/null
+# { $TEST_DIR/plc_server2 --debug=info --plc-type=micrologix '--tag=B3[10]' '--tag=N7[10]' '--tag=L19[10]' > "$LOG_DIR/micrologix_emulator.log" 2>&1 & } 2>/dev/null
 # EMULATOR_PID=$!
 # if [ $EMULATOR_PID -le 0 ]; then
 #     echo "Unable to start MicroLogix emulator!"
@@ -406,12 +406,12 @@ fi
 
 
 # echo "  Killing emulator."
-# kill_process plc_server
+# kill_process plc_server2
 
 
 
 # echo "Starting PLC/5 emulator for tests."
-# { $TEST_DIR/plc_server --debug=info --plc-type=plc5 '--tag=B3[10]' '--tag=N7[10]' > "$LOG_DIR/plc5_emulator.log" 2>&1 & } 2>/dev/null
+# { $TEST_DIR/plc_server2 --debug=info --plc-type=plc5 '--tag=B3[10]' '--tag=N7[10]' > "$LOG_DIR/plc5_emulator.log" 2>&1 & } 2>/dev/null
 # EMULATOR_PID=$!
 # if [ $EMULATOR_PID -le 0 ]; then
 #     # echo "FAILURE"
@@ -469,7 +469,7 @@ fi
 # fi
 
 # echo "  Killing emulators."
-# kill_process plc_server
+# kill_process plc_server2
 
 # kill_process modbus_server
 
@@ -601,8 +601,8 @@ fi
 # echo "  Killing Modbus emulator."
 kill_process modbus_server
 
-# Make sure no plc_server instances are running before running auto_sync_reconnect test
-kill_process plc_server
+# Make sure no plc_server2 instances are running before running auto_sync_reconnect test
+kill_process plc_server2
 
 # wait for them to exit
 sleep 2

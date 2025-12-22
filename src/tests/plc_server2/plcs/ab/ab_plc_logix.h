@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,49 +33,62 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <stdint.h>
-#include "../../../utils/buf.h"
-#include "../../../utils/err.h"
-#include "eip_defs.h"
 
-/* Forward declarations to avoid circular dependencies */
-typedef struct ab_plc_context_s ab_plc_context_t;
-typedef struct client_context_s client_context_t;
+#include <stdint.h>
+#include <stdbool.h>
+#include "../../../utils/err.h"
+#include "../../../utils/args.h"
+#include "../../../utils/coro_net.h"
+#include "ab_context.h"
 
 /* ============================================================================
- * EIP Protocol Functions
- * ============================================================================ */
-
-/**
- * @brief Frame check callback for socket_read_yield
+ * Client Connection Context
+ * ============================================================================
  *
- * Checks if a complete EIP packet is available in the buffer.
- *
- * @param buf Buffer to check
- * @param context Unused (NULL)
- * @return UTIL_OK if complete frame available, UTIL_EAGAIN if need more data,
- *         error code on invalid frame
+ * Per-connection state including I/O buffers and EIP/CIP session information.
+ * Each connected client has one client_context_t instance.
  */
-util_err_t eip_frame_check(buf_t *buf, void *context);
 
-/**
- * @brief Main EIP dispatcher
- *
- * Routes EIP commands to appropriate handlers.
- * Parses request header, dispatches by command code, builds response.
- *
- * @param input Buffer positioned at start of EIP packet (will advance read cursor)
- * @param output Buffer to write response to (cleared before use)
- * @param plc PLC context with tags and CIP registry
- * @param client Client connection context with session and connection state
- * @return UTIL_OK on success, error code on failure
+typedef struct client_context_s {
+    /* Reference to server-wide PLC context */
+    ab_plc_context_t *plc;
+
+    /* I/O Buffers */
+    uint8_t recv_buffer[8192];
+    uint8_t send_buffer[8192];
+
+    /* Buffer size limits */
+    size_t client_to_server_max_packet;
+    size_t server_to_client_max_packet;
+
+    /* EIP Session State */
+    uint32_t eip_session_handle;
+    uint32_t eip_sequence_number;
+
+    /* CIP Connection Manager State */
+    uint32_t client_connection_id;      /* O->T connection ID */
+    uint32_t server_connection_id;      /* T->O connection ID */
+    uint32_t connection_serial_number;  /* Connection serial number */
+    uint16_t originator_vendor_id;      /* Originator vendor ID */
+    uint32_t originator_serial_number;  /* Originator serial number */
+    bool is_forward_open;               /* Connected mode flag */
+
+    /* Fragmentation State (for large tag reads/writes) */
+    uint8_t fragment_offset;            /* Current fragment offset */
+    uint16_t fragment_size;             /* Size of current fragment */
+    bool has_pending_fragments;         /* More fragments to come */
+} client_context_t;
+
+/* Main entry point for ControlLogix/Micro800 PLC setup
+ * Called by main.c after argument parsing
+ * Creates PLC context, listener socket, and registers with coro event loop
  */
-util_err_t eip_dispatch(buf_t *input, buf_t *output, ab_plc_context_t *plc, client_context_t *client);
+extern util_err_t ab_plc_logix_main(const args_result_t *args, coro_net_t *coro);
+
 
 #ifdef __cplusplus
 }

@@ -39,8 +39,11 @@ extern "C" {
 #include <stdint.h>
 #include "../../../utils/buf.h"
 #include "../../../utils/err.h"
-#include "../../context/context_registry.h"
 #include "cpf_defs.h"
+
+/* Forward declarations to avoid circular dependencies */
+typedef struct ab_plc_context_s ab_plc_context_t;
+typedef struct client_context_s client_context_t;
 
 /* ============================================================================
  * CPF Protocol Functions
@@ -54,10 +57,11 @@ extern "C" {
  *
  * @param input Buffer positioned at start of CPF packet
  * @param output Buffer to write response to
- * @param context_reg Context registry (contains client and PLC contexts)
+ * @param plc PLC context with tags and CIP registry
+ * @param client Client connection context with session and connection state
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t cpf_dispatch(buf_t *input, buf_t *output, context_registry_t *context_reg);
+util_err_t cpf_dispatch(buf_t *input, buf_t *output, ab_plc_context_t *plc, client_context_t *client);
 
 #ifdef __cplusplus
 }

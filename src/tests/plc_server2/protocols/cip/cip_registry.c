@@ -35,6 +35,8 @@
 #include <string.h>
 #include "cip_registry.h"
 #include "cip_path.h"
+#include "../../plcs/ab/ab_context.h"
+#include "../../plcs/ab/ab_plc_logix.h"
 
 /* ============================================================================
  * CIP Class Structure
@@ -150,8 +152,9 @@ util_err_t cip_class_registry_dispatch_service(
     cip_service_code_t service_code,
     buf_t *input,
     buf_t *output,
-    context_registry_t *context_reg) {
-    if(!registry || !path || !input || !output || !context_reg) {
+    ab_plc_context_t *plc,
+    client_context_t *client) {
+    if(!registry || !path || !input || !output || !plc || !client) {
         return UTIL_EINVAL;
     }
 
@@ -193,5 +196,5 @@ util_err_t cip_class_registry_dispatch_service(
     }
 
     /* Call the handler */
-    return handler(service_code, path, input, output, context_reg);
+    return handler(service_code, path, input, output, plc, client);
 }

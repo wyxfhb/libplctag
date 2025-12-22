@@ -35,120 +35,190 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "../plcs/ab/ab_context.h"
-#include "../plcs/ab/ab_logix.h"
-#include "../plcs/generic/tag_storage.h"
-#include "../context/context_registry.h"
-#include "../context/context_defs.h"
+
+#include "../../utils/coro_net.h"
+#include "../../utils/args.h"
+#include "../../utils/log.h"
+#include "../../utils/socket.h"
+#include "../../utils/utils.h"
+#include "../../utils/err.h"
+#include "../plcs/ab/ab_plc_logix.h"
 
 /* ============================================================================
- * Usage and Help
+ * Global State
  * ============================================================================ */
 
-void print_usage(const char *program) {
-    printf("Usage: %s [OPTIONS]\n", program);
-    printf("\nOptions:\n");
-    printf("  --plc-type TYPE     PLC type (default: controllogix)\n");
-    printf("                       Supported: controllogix, micro800\n");
-    printf("  --port PORT         Listen port (default: 2222)\n");
-    printf("  --help              Show this help message\n");
-    printf("\nExample:\n");
-    printf("  %s --plc-type controllogix --port 2222\n", program);
-}
+static coro_net_t *g_coro = NULL;
 
 /* ============================================================================
- * Main Server Entry Point - Stub
- * ============================================================================
- *
- * TODO: Complete the server implementation
- * 1. Create listener socket
- * 2. Accept client connections
- * 3. Create per-client context registry
- * 4. Read EIP packets and dispatch
- * 5. Handle disconnections
- *
- * For now, this is a stub that just demonstrates the structure.
- */
+ * Signal Handler
+ * ============================================================================ */
+
+static void signal_handler(void) {
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Shutdown signal received");
+    if(g_coro) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Stopping event loop");
+        coro_stop(g_coro);
+    }
+}
+
+
+/* ===========================================================================
+ * Argument Definitions
+ * =========================================================================== */
+
+/* ===== Setup Argument Definitions ===== */
+static args_flag_def_t flags[] = {
+    {.name = "plc-type",
+     .type = ARGS_TYPE_STRING,
+     .required = ARGS_REQUIRED,
+     .repeat = ARGS_ONCE,
+     .description = "PLC type (controllogix, micro800, omron, etc.)",
+     .default_value = {.has_default = true, .value.string_val = "controllogix"}},
+    {.name = "debug",
+     .type = ARGS_TYPE_STRING,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Debug logging level (ERROR, WARN, INFO, DETAIL, SPEW)",
+     .default_value = {.has_default = true, .value.string_val = "INFO"}},
+    {.name = "port",
+     .type = ARGS_TYPE_INT,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Listen port (PLC type determines default)",
+     .default_value = {.has_default = false}},
+    {.name = "tag",
+     .type = ARGS_TYPE_STRING,
+     .required = ARGS_REQUIRED,
+     .repeat = ARGS_MULTIPLE,
+     .description = "Define a tag (NAME:TYPE[dimensions], can be repeated)",
+     .default_value = {.has_default = false}},
+    {.name = "path",
+     .type = ARGS_TYPE_STRING,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "CIP path (comma-separated node IDs)",
+     .default_value = {.has_default = false}},
+    {.name = "help",
+     .type = ARGS_TYPE_BOOL,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Show this help message",
+     .default_value = {.has_default = true, .value.bool_val = false}},
+};
+static size_t num_flags = sizeof(flags) / sizeof(flags[0]);
+
+
+/* ============================================================================
+ * Main Entry Point
+ * ============================================================================ */
 
 int main(int argc, char **argv) {
-    printf("PLC Server 2 - Refactored Architecture\n");
-    printf("Copyright (c) 2025 Kyle Hayes\n\n");
+    printf("PLC Server\n");
 
-    /* Parse command line arguments */
-    const char *plc_type_str = "controllogix";
-    int port = 2222;
+    /* ===== Parse Arguments ===== */
+    args_result_t args = {0};
+    util_err_t rc = args_parse(argc, argv, flags, num_flags, &args);
+    if(rc != UTIL_OK) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to parse arguments: %s", args_get_error_detail(&args));
+        args_print_help(argv[0], flags, num_flags);
+        args_free(&args);
+        return 1;
+    }
 
-    for(int i = 1; i < argc; i++) {
-        if(strcmp(argv[i], "--help") == 0) {
-            print_usage(argv[0]);
-            return 0;
-        } else if(strcmp(argv[i], "--plc-type") == 0 && i + 1 < argc) {
-            plc_type_str = argv[++i];
-        } else if(strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-            port = atoi(argv[++i]);
+    /* ===== Handle Help ===== */
+    if(args_get_bool(&args, "help")) {
+        args_print_help(argv[0], flags, num_flags);
+        args_free(&args);
+        return EXIT_SUCCESS;
+    }
+
+    /* ===== Setup Logging ===== */
+    char *debug_str = args_get_string(&args, "debug");
+    log_level_t log_level = LOG_LEVEL_NONE;
+    if(debug_str) {
+        if(strcasecmp(debug_str, "ERROR") == 0) {
+            log_level = LOG_LEVEL_ERROR;
+        } else if(strcasecmp(debug_str, "WARN") == 0) {
+            log_level = LOG_LEVEL_WARN;
+        } else if(strcasecmp(debug_str, "INFO") == 0) {
+            log_level = LOG_LEVEL_INFO;
+        } else if(strcasecmp(debug_str, "DETAIL") == 0) {
+            log_level = LOG_LEVEL_DETAIL;
+        } else if(strcasecmp(debug_str, "SPEW") == 0) {
+            log_level = LOG_LEVEL_SPEW;
+        } else if(strcasecmp(debug_str, "NONE") == 0) {
+            log_level = LOG_LEVEL_NONE;
         } else {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            print_usage(argv[0]);
-            return 1;
+            pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_WARN, "Unknown debug level '%s', using INFO", debug_str);
         }
     }
 
-    printf("Starting PLC Server\n");
-    printf("  PLC Type: %s\n", plc_type_str);
-    printf("  Port: %d\n\n", port);
+    log_set_all_modules(log_level);
 
-    /* Determine PLC type */
-    plc_type_t plc_type = PLC_TYPE_CONTROLLOGIX;
-    if(strcmp(plc_type_str, "controllogix") == 0) {
-        plc_type = PLC_TYPE_CONTROLLOGIX;
-    } else if(strcmp(plc_type_str, "micro800") == 0) {
-        plc_type = PLC_TYPE_MICRO800;
-        fprintf(stderr, "Error: Micro800 support not yet implemented\n");
-        return 1;
-    } else {
-        fprintf(stderr, "Error: Unknown PLC type: %s\n", plc_type_str);
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "PLC Server 2 starting");
+
+    /* ===== Initialize Socket Library ===== */
+    rc = socket_init();
+    if(rc != UTIL_OK) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to initialize socket library: %s", util_err_str(rc));
+        args_free(&args);
         return 1;
     }
 
-    /* Create AB PLC context */
-    printf("Creating PLC context...\n");
-    ab_plc_context_t *plc = ab_plc_context_create(plc_type);
-    if(!plc) {
-        fprintf(stderr, "Error: Failed to create PLC context\n");
+    /* ===== Setup Event Loop ===== */
+    rc = coro_create(&g_coro, 256);
+    if(rc != UTIL_OK) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to create event loop: %s", util_err_str(rc));
+        socket_cleanup();
+        args_free(&args);
         return 1;
     }
 
-    /* Register ControlLogix objects */
-    printf("Registering CIP objects...\n");
-    if(ab_logix_register_objects(plc) != 0) {
-        fprintf(stderr, "Error: Failed to register CIP objects\n");
-        ab_plc_context_destroy(plc);
+    /* ===== Setup Signal Handler ===== */
+    util_set_interrupt_handler(signal_handler);
+
+    /* ===== Dispatch by PLC Type ===== */
+    const char *plc_type = args_get_string(&args, "plc-type");
+    if(!plc_type || plc_type[0] == '\0') {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Invalid PLC type");
+        coro_destroy(&g_coro);
+        socket_cleanup();
+        args_free(&args);
         return 1;
     }
 
-    /* Add some sample tags for testing */
-    printf("Creating sample tags...\n");
-    tag_def_t *tag1 = tag_create_dint("MyTag", 42);
-    if(!tag1) {
-        fprintf(stderr, "Error: Failed to create sample tag\n");
-        ab_plc_context_destroy(plc);
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Dispatching to PLC type: %s", plc_type);
+
+    if(strcasecmp(plc_type, "controllogix") != 0) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Unknown PLC type: %s", plc_type);
+        coro_destroy(&g_coro);
+        socket_cleanup();
+        args_free(&args);
         return 1;
     }
-    if(tag_array_add(&plc->tags, &plc->tag_count, &plc->tag_capacity, tag1) != 0) {
-        fprintf(stderr, "Error: Failed to add sample tag\n");
-        tag_destroy(tag1);
-        ab_plc_context_destroy(plc);
-        return 1;
+
+    rc = ab_plc_logix_main(&args, g_coro);
+    if(rc != UTIL_OK) {
+        pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "PLC setup failed: %s", util_err_str(rc));
+        coro_destroy(&g_coro);
+        socket_cleanup();
+        args_free(&args);
+        return rc;
     }
-    printf("  Added tag: MyTag = %d\n", *(int32_t *)tag1->data);
 
-    printf("\nServer initialized successfully.\n");
-    printf("TODO: Implement socket listener and connection handler\n");
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Server initialized successfully");
 
-    /* TODO: Implement the actual server loop */
-    printf("\nShutting down...\n");
-    ab_plc_context_destroy(plc);
+    /* ===== Run Event Loop ===== */
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Running event loop");
+    coro_run(&g_coro, 50); /* 50ms tick interval */
 
-    printf("Goodbye!\n");
-    return 0;
+    /* ===== Cleanup ===== */
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Shutting down");
+    coro_destroy(&g_coro);
+    socket_cleanup();
+    args_free(&args);
+
+    pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Server stopped");
+    return EXIT_SUCCESS;
 }

@@ -41,10 +41,11 @@ extern "C" {
 typedef uint8_t context_id_t;
 
 /* Context ID constants - pre-allocated, non-overlapping */
-#define CONTEXT_ID_PLC      0x01    /* Server-wide PLC context */
-#define CONTEXT_ID_CLIENT   0x02    /* Per-client connection context */
-#define CONTEXT_ID_EIP      0x03    /* EIP session context (if needed) */
-/* Reserve 0x80+ for protocol-specific contexts */
+#define CONTEXT_ID_PLC (context_id_t)0x01    /* Server-wide PLC context */
+#define CONTEXT_ID_CLIENT (context_id_t)0x02 /* Per-client connection context */
+#define CONTEXT_ID_EIP (context_id_t)0x03    /* EIP session context (if needed) */
+#define CONTEXT_ID_CPF (context_id_t)0x04    /* CPF protocol context */
+#define CONTEXT_ID_CIP (context_id_t)0x05    /* CIP protocol context */
 
 #ifdef __cplusplus
 }
