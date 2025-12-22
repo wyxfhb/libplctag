@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "variable_type_object_omron.h"
+#include "../cip_defs.h"
 #include "../cip_message_router.h"
 #include "../../udt_storage.h"
 #include "../../plc_context.h"
@@ -51,21 +52,12 @@ typedef struct {
 static variable_type_object_omron_context_t *vto_context = NULL;
 
 /**
- * Instance type wrapper for Variable Type Object
+ * Instance data for Variable Type Object
  *
- * Can represent either a type definition or a type member.
+ * Stores a pointer to the unified UDT entry (can be a UDT definition or field entry).
  */
-typedef enum {
-    VTO_TYPE_DEF,   /* Instance is a type definition */
-    VTO_TYPE_MEMBER /* Instance is a type member */
-} vto_instance_type_t;
-
 typedef struct {
-    vto_instance_type_t type;
-    union {
-        udt_def_t *udt;
-        udt_member_t *member;
-    } data;
+    udt_entry_t *entry; /* Points to entry in unified UDT array */
 } vto_instance_data_t;
 
 /* ============================================================================
@@ -101,11 +93,12 @@ typedef struct {
  *   [16-19] uint32_le  Nesting type ID (if member is structure)
  */
 static util_err_t variable_type_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request,
-                                                           buf_t *response, cip_object_instance_t *instance, plc_context_t *plc) {
+                                                           buf_t *response, cip_object_instance_t *instance,
+                                                           client_context_t *client) {
 
     (void)path;
     (void)request;
-    (void)plc;
+    (void)client;
 
     if(!instance || !instance->instance_data) {
         pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: invalid instance");
@@ -114,84 +107,73 @@ static util_err_t variable_type_service_get_attributes_all(uint8_t service, cons
     }
 
     vto_instance_data_t *data = (vto_instance_data_t *)instance->instance_data;
+    udt_entry_t *entry = data->entry;
     bool ok = true;
 
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
 
-    if(data->type == VTO_TYPE_DEF) {
+    if(entry->entry_type == UDT_ENTRY_TYPE_DEF) {
         /* Type definition response */
-        udt_def_t *udt = data->data.udt;
+        uint16_t field_count = entry->data.udt.field_count;
 
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: type '%s' id=%u size=%zu members=%zu",
-              udt->name, udt->udt_id, udt->total_size, udt->member_count);
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: type '%s' id=%u size=%zu members=%u",
+              entry->name, entry->instance_id, entry->data.udt.total_size, field_count);
 
         /* Size, type code, array info, reserved */
-        ok &= buf_write_u32_le(response, "size", (uint32_t)udt->total_size);
-        ok &= buf_write_u8(response, "type_code", 0xA0);  /* Structure type code */
+        ok &= buf_write_u32_le(response, "size", (uint32_t)entry->data.udt.total_size);
+        ok &= buf_write_u8(response, "type_code", 0xA0); /* Structure type code */
         ok &= buf_write_u8(response, "array_type", 0);
         ok &= buf_write_u8(response, "reserved1", 0);
         ok &= buf_write_u8(response, "reserved2", 0);
 
         /* Member count and CRC */
-        ok &= buf_write_u16_le(response, "member_count", (uint16_t)udt->member_count);
+        ok &= buf_write_u16_le(response, "member_count", field_count);
         ok &= buf_write_u16_le(response, "reserved3", 0);
-        ok &= buf_write_u16_le(response, "crc_code", 0);  /* CRC not computed in unified storage */
+        ok &= buf_write_u16_le(response, "crc_code", entry->data.udt.crc_code);
 
         /* Type name with padding */
-        size_t name_len = strlen(udt->name);
+        size_t name_len = strlen(entry->name);
         ok &= buf_write_u8(response, "name_length", (uint8_t)name_len);
         size_t padded_name_len = ((name_len + 1) / 2) * 2;
         uint8_t padded_name[256];
         memset(padded_name, 0, sizeof(padded_name));
-        memcpy(padded_name, udt->name, name_len);
+        memcpy(padded_name, entry->name, name_len);
         ok &= buf_write_bytes(response, "type_name", padded_name, padded_name_len);
 
         /* First member ID and nesting type ID */
-        /* For unified storage, member instance IDs are encoded as (udt_id << 16) | member_index */
-        uint32_t first_member_id = (udt->member_count > 0) ? ((udt->udt_id << 16) | 0) : 0;
+        /* For unified storage, fields follow immediately after UDT entry in array */
+        uint32_t first_member_id = (field_count > 0) ? (entry->instance_id + 1) : 0;
         ok &= buf_write_u32_le(response, "first_member_id", first_member_id);
         ok &= buf_write_u32_le(response, "nesting_type_id", 0);
 
-    } else {
-        /* Type member response */
-        udt_member_t *member = data->data.member;
-
-        /* We need to find the parent UDT to get the next member ID */
-        /* For now, we'll calculate it from the instance_id encoding */
-        uint32_t parent_udt_id = instance->instance_id >> 16;
-        uint16_t member_index = instance->instance_id & 0xFFFF;
-
-        /* Find parent UDT to determine next member */
-        uint32_t next_member_id = 0;
-        if(vto_context && vto_context->plc) {
-            udt_def_t *parent_udt = vto_context->plc->udts;
-            while(parent_udt) {
-                if(parent_udt->udt_id == parent_udt_id && member_index + 1 < parent_udt->member_count) {
-                    next_member_id = ((parent_udt_id << 16) | (member_index + 1));
-                    break;
-                }
-                parent_udt = parent_udt->next;
-            }
-        }
-
-        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: member '%s' id=0x%X size=%zu offset=%zu next=0x%X",
-              member->name, instance->instance_id, member->element_length, member->byte_offset, next_member_id);
+    } else if(entry->entry_type == UDT_ENTRY_FIELD) {
+        /* Type field response */
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: field '%s' id=%u size=%zu offset=%zu",
+              entry->name, entry->instance_id, entry->data.field.element_length, entry->data.field.byte_offset);
 
         /* Size, type code, array info, reserved */
-        ok &= buf_write_u32_le(response, "size", (uint32_t)member->element_length);
-        ok &= buf_write_u8(response, "type_code", (uint8_t)member->symbol_type);
+        ok &= buf_write_u32_le(response, "size", (uint32_t)entry->data.field.element_length);
+        ok &= buf_write_u8(response, "type_code", (uint8_t)entry->data.field.symbol_type);
         ok &= buf_write_u8(response, "array_type", 0);
         ok &= buf_write_u16_le(response, "reserved1", 0);
 
         /* Offset within parent structure */
-        ok &= buf_write_u32_le(response, "offset", (uint32_t)member->byte_offset);
+        ok &= buf_write_u32_le(response, "offset", (uint32_t)entry->data.field.byte_offset);
 
-        /* Next member ID (for linked list traversal) */
+        /* Next member ID - find next field in array (if exists) */
+        uint32_t next_member_id = 0;
+        if(vto_context && vto_context->plc && entry->instance_id < vto_context->plc->udt_count) {
+            udt_entry_t *next = udt_get_by_id(vto_context->plc->udts, vto_context->plc->udt_count, entry->instance_id + 1);
+            if(next && next->entry_type == UDT_ENTRY_FIELD) { next_member_id = next->instance_id; }
+        }
         ok &= buf_write_u32_le(response, "next_member_id", next_member_id);
 
-        /* Nesting type ID (if this member is a structure) */
-        ok &= buf_write_u32_le(response, "nesting_type_id", 0);  /* TODO: Support nested types */
+        /* Nesting type ID (if this field is a structure) */
+        ok &= buf_write_u32_le(response, "nesting_type_id", 0); /* TODO: Support nested types */
+    } else {
+        pdlog(LOG_MODULE_OMRON_TYPE_OBJECT, LOG_LEVEL_ERROR, "Get Attributes All: invalid entry type");
+        return buf_get_error(response);
     }
 
     if(!ok) {
@@ -206,75 +188,43 @@ static util_err_t variable_type_service_get_attributes_all(uint8_t service, cons
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t *variable_type_get_instance(uint32_t instance_id, plc_context_t *plc) {
-    if(!vto_context || !vto_context->plc) { return NULL; }
+static cip_object_instance_t *variable_type_get_instance(uint32_t instance_id, client_context_t *client) {
+    if(!client || !client->plc) { return NULL; }
 
-    /* Check if this is a type definition instance (udt_id as instance_id) */
-    udt_def_t *udt = vto_context->plc->udts;
-    while(udt) {
-        if(udt->udt_id == instance_id) {
-            /* Allocate instance data */
-            vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
-            if(!data) { return NULL; }
-            data->type = VTO_TYPE_DEF;
-            data->data.udt = udt;
+    /* Look up UDT entry by instance ID (O(1)) */
+    udt_entry_t *entry = udt_get_by_id(client->plc->udts, client->plc->udt_count, (uint16_t)instance_id);
+    if(!entry) { return NULL; }
 
-            /* Allocate instance structure */
-            cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
-            if(!instance) {
-                free(data);
-                return NULL;
-            }
+    /* Check if this is a valid UDT or field entry */
+    if(entry->entry_type != UDT_ENTRY_TYPE_DEF && entry->entry_type != UDT_ENTRY_FIELD) { return NULL; }
 
-            instance->object_class = NULL; /* Will be set by registry */
-            instance->instance_id = instance_id;
-            instance->instance_data = (void *)data;
+    /* Allocate instance data */
+    vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
+    if(!data) { return NULL; }
+    data->entry = entry;
 
-            return instance;
-        }
-        udt = udt->next;
+    /* Allocate instance structure */
+    cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
+    if(!instance) {
+        free(data);
+        return NULL;
     }
 
-    /* Check if this is a type member instance (encoded as (udt_id << 16) | member_index) */
-    uint32_t parent_udt_id = instance_id >> 16;
-    uint16_t member_index = instance_id & 0xFFFF;
+    instance->object_class = NULL; /* Will be set by registry */
+    instance->instance_id = instance_id;
+    instance->instance_data = (void *)data;
 
-    if(parent_udt_id > 0 && member_index < 0xFFFF) {
-        udt = vto_context->plc->udts;
-        while(udt) {
-            if(udt->udt_id == parent_udt_id && member_index < udt->member_count) {
-                /* Allocate instance data */
-                vto_instance_data_t *data = (vto_instance_data_t *)calloc(1, sizeof(*data));
-                if(!data) { return NULL; }
-                data->type = VTO_TYPE_MEMBER;
-                data->data.member = &udt->members[member_index];
-
-                /* Allocate instance structure */
-                cip_object_instance_t *instance = (cip_object_instance_t *)calloc(1, sizeof(*instance));
-                if(!instance) {
-                    free(data);
-                    return NULL;
-                }
-
-                instance->object_class = NULL; /* Will be set by registry */
-                instance->instance_id = instance_id;
-                instance->instance_data = (void *)data;
-
-                return instance;
-            }
-            udt = udt->next;
-        }
-    }
-
-    return NULL;
+    return instance;
 }
 
 /* ============================================================================
  * Registration
  * ============================================================================ */
 
-void variable_type_object_omron_register(cip_object_registry_t *registry, plc_context_t *plc) {
-    if(!registry || !plc) { return; }
+void variable_type_object_omron_register(cip_object_registry_t *registry, client_context_t *client) {
+    if(!registry || !client) { return; }
+
+    plc_context_t *plc = client->plc;
 
     /* Store PLC context for service handlers and instance lookup */
     if(!vto_context) {
@@ -291,7 +241,7 @@ void variable_type_object_omron_register(cip_object_registry_t *registry, plc_co
     cls->class_name = "Variable Type Object (Omron)";
 
     /* Register service handlers */
-    cls->service_handlers[0x01] = variable_type_service_get_attributes_all;
+    cls->service_handlers[CIP_SRV_GET_ATTR_ALL] = variable_type_service_get_attributes_all;
 
     /* Instance management */
     cls->get_instance = variable_type_get_instance;

@@ -17,7 +17,7 @@ typedef struct plc_context_s plc_context_t;
  * Supported by both ControlLogix and Micro800 PLC types.
  *
  * @param registry CIP object registry to register with
- * @param plc      PLC context containing UDT definitions
+ * @param client   Client context containing PLC and other information
  * @return         0 on success, non-zero on error
  */
-int udt_object_register(cip_object_registry_t *registry, plc_context_t *plc);
+util_err_t udt_object_register(cip_object_registry_t *registry, client_context_t *client);

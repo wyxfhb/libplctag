@@ -17,4 +17,4 @@ typedef struct plc_context_s plc_context_t;
  *
  * @param registry Registry to register class in
  */
-void symbol_object_register(cip_object_registry_t *registry);
+void logix_symbol_object_register(cip_object_registry_t *registry);

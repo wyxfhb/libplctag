@@ -41,8 +41,6 @@
 #include "../../../utils/log.h"
 #include "../../../utils/buf.h"
 
-#define LOG_MODULE_CONNECTION_MANAGER (1ULL << 24)
-
 /* CIP Service codes */
 #define CIP_SRV_FORWARD_CLOSE ((uint8_t)0x4E)
 #define CIP_SRV_FORWARD_OPEN ((uint8_t)0x54)
@@ -78,14 +76,14 @@
  *   [22-25] uint32_le  RPI to client
  *   [26-27] uint16_le  Connection parameters (reserved, must be 0)
  */
-static util_err_t connection_manager_forward_open(uint8_t service, const cip_path_t *path, buf_t *request,
-                                                   buf_t *response, cip_object_instance_t *instance,
-                                                   plc_context_t *plc) {
+static util_err_t connection_manager_forward_open(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
+                                                  cip_object_instance_t *instance, client_context_t *client) {
+    plc_context_t *plc = client->plc;
     (void)path;
     (void)instance;
 
-    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL,
-          "Forward Open%s request", (service == CIP_SRV_FORWARD_OPEN_EX) ? " Extended" : "");
+    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open%s request",
+          (service == CIP_SRV_FORWARD_OPEN_EX) ? " Extended" : "");
 
     /* Parse Forward Open request - fields in order per EtherNet/IP spec */
     uint8_t secs_per_tick = 0;
@@ -144,12 +142,19 @@ static util_err_t connection_manager_forward_open(uint8_t service, const cip_pat
     }
 
     pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL,
-          "Forward Open: originator_vendor=0x%04X originator_serial=0x%08X conn_serial=0x%04X path_size=%u",
-          originator_vendor, originator_serial, conn_serial, path_size);
+          "Forward Open: originator_vendor=0x%04X originator_serial=0x%08X conn_serial=0x%04X path_size=%u", originator_vendor,
+          originator_serial, conn_serial, path_size);
 
     /* Read and validate connection path based on PLC type */
     uint8_t connection_path[32] = {0};
-    size_t connection_path_len = path_size * 2;  /* Path size is in words (2-byte units) */
+    size_t connection_path_len = path_size * 2; /* Path size is in words (2-byte units) */
+
+    if(connection_path_len > sizeof(connection_path)) {
+        pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN, "Forward Open: connection path too long (%zu bytes, max %zu)",
+              connection_path_len, sizeof(connection_path));
+        cip_build_response(response, service, CIP_STATUS_TOO_MUCH_DATA);
+        return UTIL_EBOUNDS;
+    }
 
     if(connection_path_len > 0) {
         if(!buf_read_bytes(request, "connection_path", connection_path, connection_path_len)) {
@@ -174,40 +179,65 @@ static util_err_t connection_manager_forward_open(uint8_t service, const cip_pat
         if(connection_path_len < plc->path_len || memcmp(connection_path, plc->path, plc->path_len) != 0) {
             pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN,
                   "Forward Open: path mismatch - got bytes 0x%02X 0x%02X (expected 0x%02X 0x%02X)",
-                  (connection_path_len > 0) ? connection_path[0] : 0xFF,
-                  (connection_path_len > 1) ? connection_path[1] : 0xFF,
+                  (connection_path_len > 0) ? connection_path[0] : 0xFF, (connection_path_len > 1) ? connection_path[1] : 0xFF,
                   plc->path[0], plc->path[1]);
             cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
             return UTIL_ENOTFOUND;
         }
-        pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open: ControlLogix path validation passed (0x%02X 0x%02X matches)",
-              plc->path[0], plc->path[1]);
+        pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL,
+              "Forward Open: ControlLogix path validation passed (0x%02X 0x%02X matches)", plc->path[0], plc->path[1]);
     } else {
         /* Micro800, PLC/5, SLC, etc. MUST NOT have a path */
         if(connection_path_len > 0) {
             pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN, "Forward Open: %s does not accept paths, but got %zu bytes",
                   (plc->plc_type == PLC_TYPE_MICRO800) ? "Micro800" : "PLC", connection_path_len);
-            cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
+            cip_build_response(response, service, CIP_STATUS_INVALID_PARAM);
             return UTIL_ENOTFOUND;
         }
         pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open: path validation passed (no path required)");
     }
 
+    /* CHECK IF WE SHOULD FAIL THIS REQUEST (testing feature) */
+    if(client->reject_fo_count > 0) {
+        client->reject_fo_count--; /* Decrement counter */
+
+        pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_INFO, "Rejecting ForwardOpen for testing (%u more rejections remaining)",
+              client->reject_fo_count);
+
+        /* Build error response: Connection ID already in use */
+        /* Format: [service|0x80][reserved][general_status][ext_status_size][ext_status_code(2 bytes)] */
+        bool ok = true;
+        ok &= buf_write_u8(response, "reply_service", service | 0x80); /* Error response */
+        ok &= buf_write_u8(response, "reserved", 0);
+        ok &= buf_write_u8(response, "general_status", 0x01);        /* Extended error */
+        ok &= buf_write_u8(response, "additional_status_size", 2);   /* 2 bytes of extended status follow */
+        ok &= buf_write_u16_le(response, "extended_status", 0x0100); /* Duplicate connection (already in use) */
+
+        if(!ok) {
+            pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_WARN, "Forward Open: failed to build error response");
+            return buf_get_error(response);
+        }
+
+        return UTIL_OK;
+    }
+
     /* Generate server connection ID (non-zero) */
     uint32_t server_conn_id = (uint32_t)time(NULL);
-    if(server_conn_id == 0) server_conn_id = 1;
+    if(server_conn_id == 0) { server_conn_id = 1; }
 
     /* Store connection state */
-    plc->client_connection_id = originator_vendor;  /* Originator vendor ID serves as connection ID */
-    plc->client_connection_serial = conn_serial;
-    plc->client_vendor_id = vendor_id;
-    plc->client_serial_number = serial_num;
-    plc->client_to_server_rpi = c2s_rpi;
-    plc->server_to_client_rpi = s2c_rpi;
-    plc->client_to_server_max_packet = (service == CIP_SRV_FORWARD_OPEN) ? c2s_params_16 : (c2s_params_32 & 0xFFF);
-    plc->server_to_client_max_packet = (service == CIP_SRV_FORWARD_OPEN) ? s2c_params_16 : (s2c_params_32 & 0xFFF);
-    plc->server_connection_id = server_conn_id;
-    plc->is_forward_open = true;
+    client->client_connection_id = originator_vendor; /* Originator vendor ID serves as connection ID */
+    client->client_connection_serial = conn_serial;
+    client->client_vendor_id = vendor_id;
+    client->client_serial_number = serial_num;
+    client->client_to_server_rpi = c2s_rpi;
+    client->server_to_client_rpi = s2c_rpi;
+    client->client_to_server_max_packet = (service == CIP_SRV_FORWARD_OPEN) ? c2s_params_16 : (c2s_params_32 & 0x1FF);
+    client->server_to_client_max_packet = (service == CIP_SRV_FORWARD_OPEN) ? s2c_params_16 : (s2c_params_32 & 0xFFF);
+    client->server_connection_id = server_conn_id;
+    client->is_forward_open = true;
+
+    /* set the request and response sizes */
 
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
@@ -239,8 +269,7 @@ static util_err_t connection_manager_forward_open(uint8_t service, const cip_pat
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open: connection accepted, server_id=0x%08X",
-          server_conn_id);
+    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Open: connection accepted, server_id=0x%08X", server_conn_id);
 
     return UTIL_OK;
 }
@@ -267,9 +296,8 @@ static util_err_t connection_manager_forward_open(uint8_t service, const cip_pat
  *   [0]     uint8      Reserved
  *   [1]     uint8      Echo connection path size
  */
-static util_err_t connection_manager_forward_close(uint8_t service, const cip_path_t *path, buf_t *request,
-                                                    buf_t *response, cip_object_instance_t *instance,
-                                                    plc_context_t *plc) {
+static util_err_t connection_manager_forward_close(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
+                                                   cip_object_instance_t *instance, client_context_t *client) {
     (void)path;
     (void)instance;
 
@@ -296,13 +324,13 @@ static util_err_t connection_manager_forward_close(uint8_t service, const cip_pa
         return buf_get_error(request);
     }
 
-    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL,
-          "Forward Close: serial=0x%04X vendor=0x%04X path_size=%u", conn_serial, vendor_id, path_size);
+    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_DETAIL, "Forward Close: serial=0x%04X vendor=0x%04X path_size=%u", conn_serial,
+          vendor_id, path_size);
 
     /* Clear connection state */
-    plc->is_forward_open = false;
-    plc->server_connection_id = 0;
-    plc->client_connection_id = 0;
+    client->is_forward_open = false;
+    client->server_connection_id = 0;
+    client->client_connection_id = 0;
 
     /* Build response */
     cip_build_response(response, service, CIP_STATUS_OK);
@@ -324,8 +352,8 @@ static util_err_t connection_manager_forward_close(uint8_t service, const cip_pa
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t *connection_manager_get_instance(uint32_t instance_id, plc_context_t *plc) {
-    (void)plc;
+static cip_object_instance_t *connection_manager_get_instance(uint32_t instance_id, client_context_t *client) {
+    (void)client;
 
     /* Connection Manager typically has only instance 1 */
     if(instance_id != 1) { return NULL; }
@@ -343,6 +371,9 @@ static cip_object_instance_t *connection_manager_get_instance(uint32_t instance_
  * ============================================================================ */
 
 void connection_manager_object_register(cip_object_registry_t *registry) {
+
+    pdlog(LOG_MODULE_CONNECTION_MANAGER, LOG_LEVEL_INFO, "Registering Connection Manager Object (Class 0x06)");
+
     cip_object_class_t *cls = (cip_object_class_t *)calloc(1, sizeof(*cls));
     if(!cls) { return; }
 

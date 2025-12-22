@@ -40,24 +40,24 @@ typedef struct client_context_s client_context_t;
  * [12-19] uint64_le  Sender Context (echo back in response)
  * [20-23] uint32_le  Options (usually 0)
  */
-typedef struct {
-    uint16_t command;        /* EIP command code */
-    uint16_t length;         /* Length of data after header */
-    uint32_t session_handle; /* Session identifier */
-    uint32_t status;         /* Response status code */
-    uint64_t sender_context; /* Echo back in response */
-    uint32_t options;        /* Command-specific flags */
-} eip_header_t;
+// typedef struct {
+//     uint16_t command;        /* EIP command code */
+//     uint16_t length;         /* Length of data after header */
+//     uint32_t session_handle; /* Session identifier */
+//     uint32_t status;         /* Response status code */
+//     uint64_t sender_context; /* Echo back in response */
+//     uint32_t options;        /* Command-specific flags */
+// } eip_header_t;
 
 /**
  * EIP Session Context
  *
  * Tracks session state for a single client connection.
  */
-typedef struct {
-    uint32_t session_handle; /* Session handle assigned by server */
-    bool registered;         /* True after successful RegisterSession */
-} eip_session_t;
+// typedef struct {
+//     uint32_t session_handle; /* Session handle assigned by server */
+//     bool registered;         /* True after successful RegisterSession */
+// } eip_session_t;
 
 /* ============================================================================
  * EIP Protocol Functions
@@ -86,7 +86,7 @@ util_err_t eip_frame_check(buf_t *buf, void *context);
  * @return UTIL_OK on success, UTIL_EINVAL on parse error,
  *         UTIL_EAGAIN if buffer too small
  */
-util_err_t eip_parse_header(buf_t *input, eip_header_t *header);
+// util_err_t eip_parse_header(buf_t *input, eip_header_t *header);
 
 /**
  * @brief Build EIP response header
@@ -100,7 +100,7 @@ util_err_t eip_parse_header(buf_t *input, eip_header_t *header);
  * @param data_length Length of data following this header
  * @return UTIL_OK on success, UTIL_EBOUNDS if buffer too small
  */
-util_err_t eip_build_response_header(buf_t *output, const eip_header_t *req, uint32_t status, uint16_t data_length);
+// util_err_t eip_build_response_header(buf_t *output, const eip_header_t *req, uint32_t status, uint16_t data_length);
 
 /**
  * @brief Main EIP dispatcher
@@ -111,7 +111,7 @@ util_err_t eip_build_response_header(buf_t *output, const eip_header_t *req, uin
  * @param input Buffer positioned at start of EIP packet (will advance read cursor)
  * @param output Buffer to write response to (cleared before use)
  * @param session EIP session state (may be updated)
- * @param plc PLC context (passed to command handlers)
+ * @param client Client context (passed to command handlers)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t eip_dispatch(buf_t *input, buf_t *output, eip_session_t *session, plc_context_t *plc);
+util_err_t eip_dispatch(buf_t *input, buf_t *output, client_context_t *client);

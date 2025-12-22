@@ -1,159 +1,186 @@
+/***************************************************************************
+ *   Copyright (C) 2025 by Kyle Hayes                                      *
+ *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
+ *                                                                         *
+ * This software is available under either the Mozilla Public License      *
+ * version 2.0 or the GNU LGPL version 2 (or later) license, whichever     *
+ * you choose.                                                             *
+ *                                                                         *
+ * MPL 2.0:                                                                *
+ *                                                                         *
+ *   This Source Code Form is subject to the terms of the Mozilla Public   *
+ *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
+ *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
+ *                                                                         *
+ *                                                                         *
+ * LGPL 2:                                                                 *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU Library General Public License as       *
+ *   published by the Free Software Foundation; either version 2 of the    *
+ *   License, or (at your option) any later version.                       *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU Library General Public     *
+ *   License along with this program; if not, write to the                 *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
 #include "udt_storage.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-/* Global counter for auto-assigning UDT IDs */
-static uint16_t next_udt_id = 1;
+/* ============================================================================
+ * Class 0x6C Array Management
+ * ============================================================================ */
 
-/**
- * Create a new UDT definition with auto-assigned ID
- */
-udt_def_t *udt_create(const char *name, size_t total_size) {
-    if (!name || name[0] == '\0') {
-        fprintf(stderr, "ERROR: UDT name cannot be empty\n");
-        return NULL;
-    }
-
-    udt_def_t *udt = (udt_def_t *)malloc(sizeof(udt_def_t));
-    if (!udt) {
-        fprintf(stderr, "ERROR: Failed to allocate memory for UDT\n");
-        return NULL;
-    }
-
-    /* Auto-assign ID */
-    udt->udt_id = next_udt_id++;
-
-    /* Copy name */
-    strncpy(udt->name, name, sizeof(udt->name) - 1);
-    udt->name[sizeof(udt->name) - 1] = '\0';
-
-    /* Initialize members */
-    udt->member_count = 0;
-    udt->members = NULL;
-    udt->total_size = total_size;
-    udt->next = NULL;
-
-    return udt;
-}
-
-/**
- * Add a member to a UDT
- */
-int udt_add_member(udt_def_t *udt, const char *name, uint16_t symbol_type,
-                   size_t byte_offset, size_t bit_offset, size_t element_length,
-                   const uint32_t dimensions[3]) {
-    if (!udt || !name || name[0] == '\0') {
-        fprintf(stderr, "ERROR: Invalid UDT or member name\n");
+int udt_array_init(udt_entry_t **entries, size_t *capacity) {
+    if (!entries || !capacity) {
         return -1;
     }
 
-    /* Validate offsets */
-    if (byte_offset >= udt->total_size) {
-        fprintf(stderr, "ERROR: Member '%s' byte_offset (%zu) >= total_size (%zu)\n",
-                name, byte_offset, udt->total_size);
+    /* Initial capacity: 128 entries */
+    *capacity = 128;
+    *entries = (udt_entry_t *)calloc(*capacity, sizeof(udt_entry_t));
+    if (!*entries) {
+        *capacity = 0;
         return -1;
     }
-
-    if (bit_offset > 7) {
-        fprintf(stderr, "ERROR: Member '%s' bit_offset (%zu) > 7\n", name, bit_offset);
-        return -1;
-    }
-
-    /* Reallocate members array */
-    udt_member_t *new_members = (udt_member_t *)realloc(udt->members,
-                                                         (udt->member_count + 1) * sizeof(udt_member_t));
-    if (!new_members) {
-        fprintf(stderr, "ERROR: Failed to allocate memory for UDT member\n");
-        return -1;
-    }
-
-    udt->members = new_members;
-
-    /* Initialize new member */
-    udt_member_t *member = &udt->members[udt->member_count];
-    strncpy(member->name, name, sizeof(member->name) - 1);
-    member->name[sizeof(member->name) - 1] = '\0';
-    member->symbol_type = symbol_type;
-    member->byte_offset = byte_offset;
-    member->bit_offset = bit_offset;
-    member->element_length = element_length;
-
-    if (dimensions) {
-        member->dimensions[0] = dimensions[0];
-        member->dimensions[1] = dimensions[1];
-        member->dimensions[2] = dimensions[2];
-    } else {
-        member->dimensions[0] = 0;
-        member->dimensions[1] = 0;
-        member->dimensions[2] = 0;
-    }
-
-    udt->member_count++;
 
     return 0;
 }
 
-/**
- * Find UDT by ID
- */
-udt_def_t *udt_find_by_id(udt_def_t *head, uint16_t udt_id) {
-    for (udt_def_t *udt = head; udt; udt = udt->next) {
-        if (udt->udt_id == udt_id) {
-            return udt;
-        }
+uint16_t udt_add_type_def(udt_entry_t **entries, size_t *count, size_t *capacity,
+                          const char *name, size_t total_size, uint16_t field_count) {
+    if (!entries || !count || !capacity || !name) {
+        return 0;
     }
-    return NULL;
+
+    /* Check if we need to resize */
+    if (*count >= *capacity) {
+        size_t new_capacity = *capacity * 2;
+        if (new_capacity == 0) {
+            new_capacity = 128;
+        }
+
+        udt_entry_t *new_array = (udt_entry_t *)realloc(*entries, new_capacity * sizeof(udt_entry_t));
+        if (!new_array) {
+            return 0;
+        }
+
+        *entries = new_array;
+        *capacity = new_capacity;
+    }
+
+    /* Add UDT entry */
+    udt_entry_t *entry = &(*entries)[*count];
+    memset(entry, 0, sizeof(*entry));
+
+    entry->entry_type = UDT_ENTRY_TYPE_DEF;
+    entry->instance_id = (uint16_t)(*count + 1);  /* 1-based instance ID */
+    strncpy(entry->name, name, sizeof(entry->name) - 1);
+    entry->name[sizeof(entry->name) - 1] = '\0';
+
+    entry->data.udt.total_size = total_size;
+    entry->data.udt.field_count = field_count;
+    entry->data.udt.crc_code = 0;
+
+    entry->dimensions[0] = field_count;
+    entry->dimensions[1] = 0;
+    entry->dimensions[2] = 0;
+
+    uint16_t udt_instance_id = entry->instance_id;
+    (*count)++;
+
+    return udt_instance_id;
 }
 
-/**
- * Find UDT by name
- */
-udt_def_t *udt_find_by_name(udt_def_t *head, const char *name) {
-    if (!name) {
+uint16_t udt_add_field(udt_entry_t **entries, size_t *count, size_t *capacity,
+                       const char *name, uint16_t symbol_type, size_t byte_offset,
+                       size_t bit_offset, size_t element_length, const uint32_t dimensions[3]) {
+    if (!entries || !count || !capacity || !name) {
+        return 0;
+    }
+
+    /* Check if we need to resize */
+    if (*count >= *capacity) {
+        size_t new_capacity = *capacity * 2;
+        if (new_capacity == 0) {
+            new_capacity = 128;
+        }
+
+        udt_entry_t *new_array = (udt_entry_t *)realloc(*entries, new_capacity * sizeof(udt_entry_t));
+        if (!new_array) {
+            return 0;
+        }
+
+        *entries = new_array;
+        *capacity = new_capacity;
+    }
+
+    /* Add field entry */
+    udt_entry_t *entry = &(*entries)[*count];
+    memset(entry, 0, sizeof(*entry));
+
+    entry->entry_type = UDT_ENTRY_FIELD;
+    entry->instance_id = (uint16_t)(*count + 1);  /* 1-based instance ID */
+    strncpy(entry->name, name, sizeof(entry->name) - 1);
+    entry->name[sizeof(entry->name) - 1] = '\0';
+
+    entry->data.field.symbol_type = symbol_type;
+    entry->data.field.byte_offset = byte_offset;
+    entry->data.field.bit_offset = bit_offset;
+    entry->data.field.element_length = element_length;
+
+    if (dimensions) {
+        entry->dimensions[0] = dimensions[0];
+        entry->dimensions[1] = dimensions[1];
+        entry->dimensions[2] = dimensions[2];
+    } else {
+        entry->dimensions[0] = 0;
+        entry->dimensions[1] = 0;
+        entry->dimensions[2] = 0;
+    }
+
+    uint16_t field_instance_id = entry->instance_id;
+    (*count)++;
+
+    return field_instance_id;
+}
+
+udt_entry_t* udt_get_by_id(udt_entry_t *entries, size_t count, uint16_t instance_id) {
+    if (!entries || instance_id == 0 || instance_id > count) {
         return NULL;
     }
 
-    for (udt_def_t *udt = head; udt; udt = udt->next) {
-        if (strcmp(udt->name, name) == 0) {
-            return udt;
+    /* Instance IDs are 1-based, array is 0-based */
+    return &entries[instance_id - 1];
+}
+
+udt_entry_t* udt_find_by_name(udt_entry_t *entries, size_t count, const char *name) {
+    if (!entries || !name) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (entries[i].entry_type == UDT_ENTRY_TYPE_DEF && strcmp(entries[i].name, name) == 0) {
+            return &entries[i];
         }
     }
     return NULL;
 }
 
-/**
- * Destroy entire UDT registry
- */
-void udt_destroy_all(udt_def_t *head) {
-    udt_def_t *current = head;
-
-    while (current) {
-        udt_def_t *next = current->next;
-
-        /* Free members array */
-        if (current->members) {
-            free(current->members);
-            current->members = NULL;
-        }
-
-        /* Free the UDT itself */
-        free(current);
-
-        current = next;
+void udt_array_destroy(udt_entry_t *entries, size_t count) {
+    if (!entries) {
+        return;
     }
-}
 
-/**
- * Get the next auto-assigned UDT ID
- */
-uint16_t udt_get_next_id(void) {
-    return next_udt_id;
-}
-
-/**
- * Reset UDT ID counter (for testing)
- */
-void udt_reset_id_counter(void) {
-    next_udt_id = 1;
+    /* Free the array */
+    free(entries);
 }

@@ -37,6 +37,7 @@
 #include "../../utils/log.h"
 #include "../../utils/buf.h"
 #include "plc_context.h"
+#include "cip_defs.h"
 
 /* ============================================================================
  * Request Parsing
@@ -90,65 +91,134 @@ util_err_t cip_build_response(buf_t *output, uint8_t service, uint8_t status) {
  * Main Dispatcher
  * ============================================================================ */
 
-util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, plc_context_t *plc) {
+util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, client_context_t *client) {
+    plc_context_t *plc = client->plc;
+
     /* Parse CIP request header */
+
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Starting");
+    // pdlog_bytes(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, input);
+
     cip_request_t request;
     util_err_t err = cip_parse_request(input, &request);
     if(err != UTIL_OK) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: failed to parse request");
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "failed to parse request");
         cip_build_response(output, 0x00, CIP_STATUS_INVALID_PARAM);
         return err;
     }
 
+    /* debug*/
+    switch(request.service) {
+        case CIP_SRV_READ_TAG:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Read Tag (0x%02X)", CIP_SRV_READ_TAG);
+            break;
+        case CIP_SRV_WRITE_TAG:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Write Tag (0x%02X)", CIP_SRV_WRITE_TAG);
+            break;
+        case CIP_SRV_READ_TAG_FRAG_AB:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Read Tag Fragmented (0x%02X)",
+                  CIP_SRV_READ_TAG_FRAG_AB);
+            break;
+        case CIP_SRV_WRITE_TAG_FRAG_AB:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Write Tag Fragmented (0x%02X)",
+                  CIP_SRV_WRITE_TAG_FRAG_AB);
+            break;
+        case CIP_SRV_GET_ATTR_ALL:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Get Attributes All (0x%02X)",
+                  CIP_SRV_GET_ATTR_ALL);
+            break;
+        case CIP_SRV_GET_ATTR_LIST:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Get Attribute List (0x%02X)",
+                  CIP_SRV_GET_ATTR_LIST);
+            break;
+        // case CIP_SRV_READ_TEMPLATE:
+        //     pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Read Template (0x%02X)",
+        //     CIP_SRV_READ_TEMPLATE); break;
+        case CIP_SRV_GET_INSTANCE_LIST_OMRON:
+            pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Get Instance List (0x%02X)",
+                  CIP_SRV_GET_INSTANCE_LIST_OMRON);
+            break;
+        default: pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP Request Service: Unknown (0x%02X)", request.service); break;
+    }
+
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP request: service=0x%02X path_size=%u words", request.service,
+          request.path_size);
+
     /* Parse CIP path */
-    cip_path_t path;
+    cip_path_t path = {0};
     err = cip_parse_path(input, request.path_size, &path);
     if(err != UTIL_OK) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: failed to parse path: %s", util_err_str(err));
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "failed to parse path: %s", util_err_str(err));
         cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return err;
     }
 
     /* check the first segment in the path */
     if(path.segment_count == 0) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: empty path");
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "empty path");
         cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
         return UTIL_EINVAL;
     }
 
+    /* dump path segments */
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP path parsed with %zu segments", path.segment_count);
+    for(size_t i = 0; i < path.segment_count; i++) {
+        switch(path.segments[i].type) {
+            case CIP_SEGMENT_LOGICAL_CLASS_8BIT:
+            case CIP_SEGMENT_LOGICAL_CLASS_16BIT:
+            case CIP_SEGMENT_LOGICAL_CLASS_32BIT:
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  Segment %zu: Logical Class ID=0x%08X", i,
+                      path.segments[i].logical.id);
+                break;
+            case CIP_SEGMENT_LOGICAL_INSTANCE_8BIT:
+            case CIP_SEGMENT_LOGICAL_INSTANCE_16BIT:
+            case CIP_SEGMENT_LOGICAL_INSTANCE_32BIT:
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  Segment %zu: Logical Instance ID=0x%08X", i,
+                      path.segments[i].logical.id);
+                break;
+            case CIP_SEGMENT_SYMBOLIC:
+                pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  Segment %zu: Symbolic Name='%.*s'", i,
+                      (int)path.segments[i].symbolic.length, path.segments[i].symbolic.name);
+                break;
+            default: pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "  Segment %zu: type=0x%02X", i, path.segments[i].type);
+        }
+    }
+
     /* Check if first segment is a logical class (0x20, 0x21, 0x22) */
-    if(path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_8BIT ||
-       path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_16BIT ||
-       path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_32BIT) {
+    if(path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_8BIT || path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_16BIT
+       || path.segments[0].type == CIP_SEGMENT_LOGICAL_CLASS_32BIT) {
 
         uint32_t class_id = path.segments[0].logical.id;
         uint32_t instance_id = 0;
 
         /* Check if second segment is a logical instance (0x24, 0x25, 0x26) */
-        if(path.segment_count > 1 &&
-           (path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT ||
-            path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_16BIT ||
-            path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_32BIT)) {
+        if(path.segment_count > 1
+           && (path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_8BIT
+               || path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_16BIT
+               || path.segments[1].type == CIP_SEGMENT_LOGICAL_INSTANCE_32BIT)) {
             instance_id = path.segments[1].logical.id;
         }
 
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP dispatch: routing to class 0x%02X instance 0x%08X",
-              class_id, instance_id);
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "routing to class 0x%02X instance 0x%08X", class_id, instance_id);
 
-        return cip_registry_dispatch(plc->registry, (uint16_t)class_id, instance_id, request.service, &path, input, output, plc);
+        return cip_registry_dispatch(plc->registry, (uint16_t)class_id, instance_id, request.service, &path, input, output,
+                                     client);
     }
 
     if(path.segments[0].type == CIP_SEGMENT_SYMBOLIC) {
-        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "CIP dispatch: routing to Symbol Object (0x6B) for tag '%.*s'",
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "routing to Symbol Object (0x6B) for tag '%.*s'",
               (int)path.segments[0].symbolic.length, path.segments[0].symbolic.name);
 
         /* Micro800 routes all tag accesses through Symbol Object Class 0x6B */
-        return cip_registry_dispatch(plc->registry, 0x6B, 0, request.service, &path, input, output, plc);
+        util_err_t err = cip_registry_dispatch(plc->registry, 0x6B, 0, request.service, &path, input, output, client);
+
+        pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Symbol Object dispatch returned status %s", util_err_str(err));
+        pdlog_bytes(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, output);
+        return err;
     }
 
     /* If we get here, we couldn't route the request */
-    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "CIP dispatch: couldn't determine target object (segment type 0x%02X)",
-          path.segments[0].type);
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_WARN, "couldn't determine target object (segment type 0x%02X)", path.segments[0].type);
     cip_build_response(output, request.service, CIP_STATUS_PATH_DEST_UNKNOWN);
 
     return UTIL_ENOTFOUND;

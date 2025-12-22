@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tag_name_server_omron.h"
+#include "../cip_defs.h"
 #include "../cip_message_router.h"
 #include "../../tag_storage.h"
 #include "../../plc_context.h"
@@ -68,11 +69,11 @@ static tag_name_server_omron_context_t *tns_context = NULL;
  */
 static util_err_t tag_name_server_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request,
                                                              buf_t *response, cip_object_instance_t *instance,
-                                                             plc_context_t *plc) {
+                                                             client_context_t *client) {
 
     (void)path;
     (void)request;
-    (void)plc;
+    (void)client;
     (void)instance;
 
     if(!tns_context || !tns_context->plc) {
@@ -81,13 +82,8 @@ static util_err_t tag_name_server_service_get_attributes_all(uint8_t service, co
         return UTIL_EINTERNAL;
     }
 
-    /* Count tags */
-    size_t tag_count = 0;
-    tag_def_t *tag = tns_context->plc->tags;
-    while(tag) {
-        tag_count++;
-        tag = tag->next;
-    }
+    /* Get tag count from array */
+    size_t tag_count = tns_context->plc->tag_count;
 
     pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Attributes All: returning count=%zu", tag_count);
 
@@ -133,10 +129,10 @@ static util_err_t tag_name_server_service_get_attributes_all(uint8_t service, co
  */
 static util_err_t tag_name_server_service_get_instance_list(uint8_t service, const cip_path_t *path, buf_t *request,
                                                             buf_t *response, cip_object_instance_t *instance,
-                                                            plc_context_t *plc) {
+                                                            client_context_t *client) {
 
     (void)path;
-    (void)plc;
+    (void)client;
     (void)instance;
 
     if(!tns_context || !tns_context->plc) {
@@ -184,21 +180,23 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
     /* Build response header */
     cip_build_response(response, service, CIP_STATUS_OK);
 
-    /* First pass: count matching records and determine if more exist */
+    /* Find starting index for start_instance_id */
+    size_t start_index = 0;
+    if(start_instance_id > 0) {
+        for(size_t i = 0; i < tns_context->plc->tag_count; i++) {
+            if(tns_context->plc->tags[i]->instance_id >= start_instance_id) {
+                start_index = i;
+                break;
+            }
+        }
+    }
+
+    /* Count matching records and determine if more exist */
     uint32_t returned_count = 0;
     uint8_t more_flag = 0;
-    tag_def_t *tag = tns_context->plc->tags;
 
-    /* Skip to start_instance_id */
-    while(tag && tag->instance_id < start_instance_id) { tag = tag->next; }
-
-    /* Count how many we'll return and if more exist */
-    tag_def_t *count_tag = tag;
-    while(count_tag && returned_count < max_count) {
-        returned_count++;
-        count_tag = count_tag->next;
-    }
-    if(count_tag) { more_flag = 1; }
+    for(size_t i = start_index; i < tns_context->plc->tag_count && returned_count < max_count; i++) { returned_count++; }
+    if(start_index + returned_count < tns_context->plc->tag_count) { more_flag = 1; }
 
     /* Write header */
     bool ok = true;
@@ -211,15 +209,11 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
         return buf_get_error(response);
     }
 
-    /* Second pass: build records */
+    /* Build records from array */
     uint32_t record_count = 0;
-    tag = tns_context->plc->tags;
 
-    /* Skip to start_instance_id again */
-    while(tag && tag->instance_id < start_instance_id) { tag = tag->next; }
-
-    /* Build records up to max_count */
-    while(tag && record_count < max_count) {
+    for(size_t i = start_index; i < tns_context->plc->tag_count && record_count < max_count; i++) {
+        tag_def_t *tag = tns_context->plc->tags[i];
         size_t name_len = strlen(tag->name);
         size_t padded_name_len = ((name_len + 1) / 2) * 2; /* Pad to word boundary */
 
@@ -251,7 +245,6 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
               tag->instance_id, tag->name);
 
         record_count++;
-        tag = tag->next;
     }
 
     pdlog(LOG_MODULE_OMRON_TAG_NAME_SERVER, LOG_LEVEL_DETAIL, "Get Instance List: returned %u records, more_flag=%u",
@@ -264,8 +257,8 @@ static util_err_t tag_name_server_service_get_instance_list(uint8_t service, con
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t *tag_name_server_get_instance(uint32_t instance_id, plc_context_t *plc) {
-    (void)plc;
+static cip_object_instance_t *tag_name_server_get_instance(uint32_t instance_id, client_context_t *client) {
+    (void)client;
 
     /* Tag Name Server is a singleton on Instance 0 */
     if(instance_id != 0) { return NULL; }
@@ -282,14 +275,17 @@ static cip_object_instance_t *tag_name_server_get_instance(uint32_t instance_id,
  * Registration
  * ============================================================================ */
 
-void tag_name_server_omron_register(cip_object_registry_t *registry, plc_context_t *plc) {
-    if(!registry || !plc) { return; }
+void tag_name_server_omron_register(cip_object_registry_t *registry, client_context_t *client) {
+    if(!registry || !client) { return; }
+
+    plc_context_t *plc = client->plc;
 
     /* Store PLC context for service handlers */
     if(!tns_context) {
         tns_context = (tag_name_server_omron_context_t *)calloc(1, sizeof(*tns_context));
         if(!tns_context) { return; }
     }
+
     tns_context->plc = plc;
 
     /* Create and register the object class */
@@ -300,8 +296,8 @@ void tag_name_server_omron_register(cip_object_registry_t *registry, plc_context
     cls->class_name = "Tag Name Server (Omron)";
 
     /* Register service handlers */
-    cls->service_handlers[0x01] = tag_name_server_service_get_attributes_all;
-    cls->service_handlers[0x5F] = tag_name_server_service_get_instance_list;
+    cls->service_handlers[CIP_SRV_GET_ATTR_ALL] = tag_name_server_service_get_attributes_all;
+    cls->service_handlers[CIP_SRV_GET_INSTANCE_LIST_OMRON] = tag_name_server_service_get_instance_list;
 
     /* Instance management */
     cls->get_instance = tag_name_server_get_instance;

@@ -25,5 +25,4 @@ typedef struct plc_context_s plc_context_t;
  * @param registry CIP object registry to register class in
  * @param plc Server context (for tag list access via plc->tags)
  */
-void variable_object_omron_register(cip_object_registry_t *registry,
-                                     plc_context_t *plc);
+void variable_object_omron_register(cip_object_registry_t *registry, client_context_t *client);

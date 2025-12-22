@@ -36,6 +36,7 @@
 #include "cip_path.h"
 #include "cip_object_registry.h"
 #include "cip_message_router.h"
+#include "../plc_context.h"
 #include "../../utils/log.h"
 
 /* ============================================================================
@@ -90,7 +91,15 @@ cip_object_class_t *cip_registry_find_class(cip_object_registry_t *registry, uin
  * ============================================================================ */
 
 util_err_t cip_registry_dispatch(cip_object_registry_t *registry, uint16_t class_id, uint32_t instance_id, uint8_t service,
-                                 const cip_path_t *path, buf_t *request, buf_t *response, plc_context_t *plc) {
+                                 const cip_path_t *path, buf_t *request, buf_t *response, client_context_t *client) {
+    plc_context_t *plc = client->plc;
+
+    if(!registry || !request || !response || !client) { return UTIL_ENULL; }
+
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Registry dispatch: class=0x%04X instance=%u service=0x%02X", class_id,
+          instance_id, service);
+    pdlog_bytes(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, request);
+
     /* Find class */
     cip_object_class_t *obj_class = cip_registry_find_class(registry, class_id);
     if(!obj_class) {
@@ -130,7 +139,15 @@ util_err_t cip_registry_dispatch(cip_object_registry_t *registry, uint16_t class
           instance_id, service);
 
     /* Dispatch to handler */
-    util_err_t err = handler(service, path, request, response, instance, plc);
+    util_err_t err = handler(service, path, request, response, instance, client);
+
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Registry dispatch: handler completed with status %s", util_err_str(err));
+
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Remaining request data:");
+    pdlog_bytes(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, request);
+
+    pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Response data:");
+    pdlog_bytes(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, response);
 
     if(err != UTIL_OK) {
         pdlog(LOG_MODULE_CIP_ROUTER, LOG_LEVEL_DETAIL, "Registry dispatch: handler returned %s", util_err_str(err));

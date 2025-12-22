@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "../plc_context.h"
 #include "../../utils/buf.h"
 #include "../../utils/err.h"
 
@@ -27,7 +28,7 @@ typedef util_err_t (*cip_service_handler_t)(uint8_t service,                 /* 
                                             buf_t *request,                  /* Request data (positioned after service+path) */
                                             buf_t *response,                 /* Response buffer to write data to */
                                             cip_object_instance_t *instance, /* Target instance */
-                                            plc_context_t *plc               /* PLC context (for tags, etc.) */
+                                            client_context_t *client         /* Client context */
 );
 
 /* ============================================================================
@@ -63,8 +64,8 @@ typedef struct cip_object_class_s {
     cip_service_handler_t service_handlers[256];
 
     /* Instance management callbacks */
-    cip_object_instance_t *(*get_instance)(uint32_t instance_id, plc_context_t *plc);
-    util_err_t (*create_instance)(uint32_t instance_id, plc_context_t *plc);
+    cip_object_instance_t *(*get_instance)(uint32_t instance_id, client_context_t *client);
+    util_err_t (*create_instance)(uint32_t instance_id, client_context_t *client);
     void (*destroy_instance)(cip_object_instance_t *instance);
 
     /* Class-specific data (rarely used) */
@@ -81,7 +82,7 @@ typedef struct cip_object_class_s {
  * Maintains all registered CIP object classes.
  * Provides lookup and dispatch functionality.
  */
-typedef struct {
+typedef struct cip_object_registry_s {
     cip_object_class_t *classes[256]; /* Indexed by class ID */
     size_t class_count;
 } cip_object_registry_t;
@@ -146,4 +147,4 @@ cip_object_class_t *cip_registry_find_class(cip_object_registry_t *registry, uin
  * @return UTIL_OK on success, error code on failure
  */
 util_err_t cip_registry_dispatch(cip_object_registry_t *registry, uint16_t class_id, uint32_t instance_id, uint8_t service,
-                                 const cip_path_t *path, buf_t *request, buf_t *response, plc_context_t *plc);
+                                 const cip_path_t *path, buf_t *request, buf_t *response, client_context_t *client);

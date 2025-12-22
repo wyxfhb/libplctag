@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "../plc_context.h"
 #include "../../utils/buf.h"
 #include "../../utils/err.h"
 
@@ -60,10 +61,10 @@ util_err_t cip_parse_request(buf_t *input, cip_request_t *request);
  *
  * @param input Buffer positioned at start of CIP message
  * @param output Buffer to write CIP response to
- * @param plc PLC context (for object registry, tags, etc.)
+ * @param client Client context (for object registry, tags, etc.)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, plc_context_t *plc);
+util_err_t cip_message_router_dispatch(buf_t *input, buf_t *output, client_context_t *client);
 
 /**
  * @brief Build CIP response header

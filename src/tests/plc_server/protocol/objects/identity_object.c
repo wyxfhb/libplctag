@@ -71,11 +71,11 @@
  *   [14+]   uint8[]    Product Name (padded to word boundary)
  */
 static util_err_t identity_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
-                                                      cip_object_instance_t *instance, plc_context_t *plc) {
+                                                      cip_object_instance_t *instance, client_context_t *client) {
 
     (void)path;
     (void)request;
-    (void)plc;
+    (void)client;
     (void)instance;
 
     pdlog(LOG_MODULE_IDENTITY_OBJECT, LOG_LEVEL_DETAIL, "Get Attributes All: building device information");
@@ -107,6 +107,8 @@ static util_err_t identity_service_get_attributes_all(uint8_t service, const cip
     ok &= buf_write_u16_le(response, "product_name_len", (uint16_t)name_words);
 
     /* Attribute 8: Product Name (with padding) */
+    /* FIXME - this is completely broken, do we count the product name length in bytes or words? */
+    /* This should be fixed by the PLC type in the plc context. */
     uint8_t padded_name[256];
     memset(padded_name, 0, sizeof(padded_name));
     memcpy(padded_name, PRODUCT_NAME, name_len);
@@ -128,8 +130,8 @@ static util_err_t identity_service_get_attributes_all(uint8_t service, const cip
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t *identity_get_instance(uint32_t instance_id, plc_context_t *plc) {
-    (void)plc;
+static cip_object_instance_t *identity_get_instance(uint32_t instance_id, client_context_t *client) {
+    (void)client;
 
     /* Identity object typically has only instance 1 */
     if(instance_id != 1) { return NULL; }

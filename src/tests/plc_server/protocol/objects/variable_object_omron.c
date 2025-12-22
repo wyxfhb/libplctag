@@ -38,6 +38,7 @@
 #include "../cip_path.h"
 
 #include "variable_object_omron.h"
+#include "../cip_defs.h"
 #include "../cip_message_router.h"
 #include "../../tag_storage.h"
 #include "../../plc_context.h"
@@ -80,7 +81,8 @@ static variable_object_omron_context_t *vo_context = NULL;
  *   [21-24] uint32_le  Type instance ID (for structures, 0 for primitives)
  */
 static util_err_t variable_service_get_attributes_all(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
-                                                      cip_object_instance_t *instance, plc_context_t *plc) {
+                                                      cip_object_instance_t *instance, client_context_t *client) {
+    plc_context_t *plc = client->plc;
 
     (void)request;
 
@@ -95,20 +97,16 @@ static util_err_t variable_service_get_attributes_all(uint8_t service, const cip
         }
 
         /* Look up tag by name */
-        const char *tag_name = path->segments[0].symbolic.name;
-        size_t tag_name_len = path->segments[0].symbolic.length;
+        // const char *tag_name = path->segments[0].symbolic.name;
+        // size_t tag_name_len = path->segments[0].symbolic.length;
 
-        /* Search through tag list for matching name */
-        for(tag_def_t *t = vo_context->plc->tags; t != NULL; t = t->next) {
-            if(strlen(t->name) == tag_name_len && strncmp(t->name, tag_name, tag_name_len) == 0) {
-                tag = t;
-                break;
-            }
-        }
+        /* Search through tag array for matching name */
+        tag = tag_find_by_name(vo_context->plc->tags, vo_context->plc->tag_count, path->segments[0].symbolic.name,
+                               path->segments[0].symbolic.length);
 
         if(!tag) {
             pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Get Attributes All: tag '%.*s' not found",
-                  (int)tag_name_len, tag_name);
+                  (int)path->segments[0].symbolic.length, path->segments[0].symbolic.name);
             cip_build_response(response, service, CIP_STATUS_PATH_DEST_UNKNOWN);
             return UTIL_ENOTFOUND;
         }
@@ -132,7 +130,7 @@ static util_err_t variable_service_get_attributes_all(uint8_t service, const cip
     ok &= buf_write_u16_le(response, "size", (uint16_t)data_size);
     ok &= buf_write_u8(response, "type_code", (uint8_t)(tag->tag_type & 0xFF));
     ok &= buf_write_u8(response, "array_type", tag->dim_count > 0 ? 1 : 0);
-    ok &= buf_write_u8(response, "dim_count", tag->dim_count);
+    ok &= buf_write_u8(response, "dim_count", (uint8_t)(tag->dim_count));
     ok &= buf_write_u8(response, "reserved1", 0);
 
     /* Write dimensions (convert size_t to uint32_t) */
@@ -175,9 +173,10 @@ static util_err_t variable_service_get_attributes_all(uint8_t service, const cip
  *   [4+]   uint8[]    Data
  */
 static util_err_t variable_service_read_tag(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
-                                            cip_object_instance_t *instance, plc_context_t *plc) {
+                                            cip_object_instance_t *instance, client_context_t *client) {
+    plc_context_t *plc = client->plc;
 
-    (void)plc;
+    (void)client;
 
     if(!instance || !instance->instance_data) {
         pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_WARN, "Read Tag: invalid instance");
@@ -252,8 +251,7 @@ static util_err_t variable_service_read_tag(uint8_t service, const cip_path_t *p
         return buf_get_error(response);
     }
 
-    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: success - tag '%s' bytes=%zu", tag->name,
-          bytes_to_read);
+    pdlog(LOG_MODULE_OMRON_VARIABLE_OBJECT, LOG_LEVEL_DETAIL, "Read Tag: success - tag '%s' bytes=%zu", tag->name, bytes_to_read);
 
     return UTIL_OK;
 }
@@ -278,7 +276,9 @@ static util_err_t variable_service_read_tag(uint8_t service, const cip_path_t *p
  *   (empty on success)
  */
 static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *path, buf_t *request, buf_t *response,
-                                             cip_object_instance_t *instance, plc_context_t *plc) {
+                                             cip_object_instance_t *instance, client_context_t *client) {
+
+    plc_context_t *plc = client->plc;
 
     (void)plc;
 
@@ -393,19 +393,13 @@ static util_err_t variable_service_write_tag(uint8_t service, const cip_path_t *
  * Instance Management
  * ============================================================================ */
 
-static cip_object_instance_t *variable_get_instance(uint32_t instance_id, plc_context_t *plc) {
-    (void)plc;
+static cip_object_instance_t *variable_get_instance(uint32_t instance_id, client_context_t *client) {
+    (void)client;
 
     if(!vo_context || !vo_context->plc || !vo_context->plc->tags) { return NULL; }
 
-    /* Find tag by instance ID */
-    tag_def_t *tag = NULL;
-    for(tag_def_t *t = vo_context->plc->tags; t != NULL; t = t->next) {
-        if(t->instance_id == instance_id) {
-            tag = t;
-            break;
-        }
-    }
+    /* Find tag by instance ID (O(1)) */
+    tag_def_t *tag = tag_get_by_id(vo_context->plc->tags, vo_context->plc->tag_count, instance_id);
     if(!tag) { return NULL; }
 
     /* Allocate instance structure and wrap tag */
@@ -423,8 +417,10 @@ static cip_object_instance_t *variable_get_instance(uint32_t instance_id, plc_co
  * Registration
  * ============================================================================ */
 
-void variable_object_omron_register(cip_object_registry_t *registry, plc_context_t *plc) {
-    if(!registry || !plc) { return; }
+void variable_object_omron_register(cip_object_registry_t *registry, client_context_t *client) {
+    if(!registry || !client) { return; }
+
+    plc_context_t *plc = client->plc;
 
     /* Store PLC context for service handlers */
     if(!vo_context) {
@@ -441,9 +437,9 @@ void variable_object_omron_register(cip_object_registry_t *registry, plc_context
     cls->class_name = "Variable Object (Omron)";
 
     /* Register service handlers */
-    cls->service_handlers[0x01] = variable_service_get_attributes_all;
-    cls->service_handlers[0x4C] = variable_service_read_tag;
-    cls->service_handlers[0x4D] = variable_service_write_tag;
+    cls->service_handlers[CIP_SRV_GET_ATTR_ALL] = variable_service_get_attributes_all;
+    cls->service_handlers[CIP_SRV_READ_TAG] = variable_service_read_tag;
+    cls->service_handlers[CIP_SRV_WRITE_TAG] = variable_service_write_tag;
 
     /* Instance management */
     cls->get_instance = variable_get_instance;

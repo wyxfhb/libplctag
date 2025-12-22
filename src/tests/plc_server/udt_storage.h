@@ -3,97 +3,146 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Forward declaration */
-typedef struct udt_member_s udt_member_t;
+/* ============================================================================
+ * Class 0x6C (Variable Type Object) Entry Types
+ * ============================================================================ */
 
 /**
- * UDT Member Definition
+ * Entry type discriminator for unified UDT storage.
  *
- * Represents a single field within a User-Defined Type.
+ * Unified storage contains both UDT definitions and their field definitions.
+ * They are stored in a single flat array with sequential instance IDs:
+ *   - UDT entry with instance_id = N
+ *   - Followed immediately by its field entries: N+1, N+2, ...
+ *   - Next UDT entry: N + field_count + 1
  */
-typedef struct udt_member_s {
-    char name[256];           /* Member name */
-    uint16_t symbol_type;     /* Type code (DINT=0xC4, REAL=0xCA, BOOL=0xC1, UDT ID, etc.) */
-    size_t byte_offset;       /* Byte offset within UDT */
-    size_t bit_offset;        /* Bit offset (0-7) for BOOL types, 0 for others */
-    size_t element_length;    /* Size of single element (1, 2, 4 bytes) */
-    uint32_t dimensions[3];   /* Array dimensions; [0,0,0] for scalar, [count,0,0] for 1D array */
-} udt_member_t;
+typedef enum {
+    UDT_ENTRY_TYPE_DEF,     /* Entry is a UDT definition */
+    UDT_ENTRY_FIELD         /* Entry is a UDT field definition */
+} udt_entry_type_t;
 
 /**
- * UDT Definition
+ * Unified UDT Entry
  *
- * Represents a complete User-Defined Type with its members and metadata.
+ * Represents either a UDT definition or a field definition.
+ * Stored in a single flat array with both UDT and field entries.
+ *
+ * Instance IDs are 1-based and sequential:
+ *   - Access: entries[instance_id - 1]
+ *   - For UDT at index i with field_count fields:
+ *     - Fields stored at indices i+1 through i+field_count
  */
-typedef struct udt_def_s {
-    uint16_t udt_id;              /* Unique type ID (auto-assigned, 1-based) */
-    char name[256];               /* UDT type name */
-    size_t member_count;          /* Number of members */
-    udt_member_t *members;        /* Dynamic array of members */
-    size_t total_size;            /* Total bytes for one UDT instance */
-    struct udt_def_s *next;       /* Linked list pointer */
-} udt_def_t;
+typedef struct udt_entry_s {
+    udt_entry_type_t entry_type;  /* Distinguishes UDT definitions from field definitions */
+    uint16_t instance_id;         /* 1-based instance ID, unique per entry */
+    char name[256];               /* UDT name or field name (null-terminated) */
+
+    union {
+        /* When entry_type == UDT_ENTRY_TYPE_DEF */
+        struct {
+            uint16_t field_count;       /* Number of fields following this UDT entry */
+            size_t total_size;          /* Total bytes for one UDT instance */
+            uint16_t crc_code;          /* CRC code (0 if not computed) */
+        } udt;
+
+        /* When entry_type == UDT_ENTRY_FIELD */
+        struct {
+            uint16_t symbol_type;       /* CIP type code (0xC3=INT, 0xC4=DINT, 0xCA=REAL, etc.) or UDT ID */
+            size_t byte_offset;         /* Byte offset within parent UDT */
+            size_t bit_offset;          /* Bit offset (0-7) for BOOL types, 0 for others */
+            size_t element_length;      /* Size of one element in bytes */
+        } field;
+    } data;
+
+    uint32_t dimensions[3];       /* UDT: [0]=field_count, [1-2]=0; Field: actual array dimensions */
+} udt_entry_t;
+
+/* ============================================================================
+ * Class 0x6C Array Management Functions
+ * ============================================================================ */
 
 /**
- * Create a new UDT definition with auto-assigned ID
+ * @brief Initialize UDT entry array with initial capacity
  *
- * @param name     UDT type name (max 255 chars)
- * @param total_size Total size in bytes for this UDT
- * @return         Newly allocated udt_def_t, or NULL on error
+ * Allocates the UDT entry array storage with initial capacity.
+ * This must be called before any udt_*_add() calls.
+ *
+ * @param entries Pointer to UDT entry array pointer (will be allocated)
+ * @param capacity Pointer to capacity variable (will be set)
+ * @return 0 on success, non-zero on allocation failure
  */
-udt_def_t *udt_create(const char *name, size_t total_size);
+int udt_array_init(udt_entry_t **entries, size_t *capacity);
 
 /**
- * Add a member to a UDT
+ * @brief Add UDT type definition entry to array
  *
- * @param udt              UDT definition to modify
- * @param name             Member name
- * @param symbol_type      Type code (built-in type or UDT ID)
- * @param byte_offset      Byte offset within UDT
- * @param bit_offset       Bit offset (0-7) for BOOL, 0 for others
- * @param element_length   Size of single element
- * @param dimensions       Array dimensions (NULL for scalar)
- * @return                 0 on success, non-zero on error
+ * Adds a UDT entry to the array, resizing (doubling capacity) if needed.
+ * Returns the instance ID assigned to the UDT.
+ *
+ * @param entries Pointer to UDT entry array pointer (may be reallocated)
+ * @param count Pointer to count variable (will be incremented)
+ * @param capacity Pointer to capacity variable (may be increased)
+ * @param name UDT name
+ * @param total_size Total bytes for one UDT instance
+ * @param field_count Number of fields in this UDT
+ * @return Assigned instance_id on success, 0 on allocation failure
  */
-int udt_add_member(udt_def_t *udt, const char *name, uint16_t symbol_type,
-                   size_t byte_offset, size_t bit_offset, size_t element_length,
-                   const uint32_t dimensions[3]);
+uint16_t udt_add_type_def(udt_entry_t **entries, size_t *count, size_t *capacity,
+                          const char *name, size_t total_size, uint16_t field_count);
 
 /**
- * Find UDT by ID
+ * @brief Add field definition entry to array
  *
- * @param head   Head of UDT linked list
- * @param udt_id UDT ID to search for
- * @return       Pointer to udt_def_t if found, NULL otherwise
+ * Adds a field entry to the array, resizing (doubling capacity) if needed.
+ * Returns the instance ID assigned to the field.
+ *
+ * @param entries Pointer to UDT entry array pointer (may be reallocated)
+ * @param count Pointer to count variable (will be incremented)
+ * @param capacity Pointer to capacity variable (may be increased)
+ * @param name Field name
+ * @param symbol_type CIP type code or UDT ID
+ * @param byte_offset Byte offset within parent UDT
+ * @param bit_offset Bit offset for BOOL fields (0 for others)
+ * @param element_length Size of one element
+ * @param dimensions Array dimensions (NULL for scalar)
+ * @return Assigned instance_id on success, 0 on allocation failure
  */
-udt_def_t *udt_find_by_id(udt_def_t *head, uint16_t udt_id);
+uint16_t udt_add_field(udt_entry_t **entries, size_t *count, size_t *capacity,
+                       const char *name, uint16_t symbol_type, size_t byte_offset,
+                       size_t bit_offset, size_t element_length, const uint32_t dimensions[3]);
 
 /**
- * Find UDT by name
+ * @brief Get UDT entry by instance ID from array
  *
- * @param head Head of UDT linked list
+ * Direct array access: entries[instance_id - 1]
+ * O(1) time complexity.
+ *
+ * @param entries Array of UDT entries (may be NULL)
+ * @param count Number of entries in array
+ * @param instance_id Instance ID (1-based)
+ * @return Pointer to udt_entry_t if found, NULL if instance_id out of bounds
+ */
+udt_entry_t* udt_get_by_id(udt_entry_t *entries, size_t count, uint16_t instance_id);
+
+/**
+ * @brief Find UDT type definition by name in array
+ *
+ * Searches the array for a UDT entry matching the given name.
+ * O(n) time complexity but skips field entries.
+ *
+ * @param entries Array of UDT entries (may be NULL)
+ * @param count Number of entries in array
  * @param name UDT name to search for (case-sensitive)
- * @return     Pointer to udt_def_t if found, NULL otherwise
+ * @return Pointer to udt_entry_t if found, NULL if not found
  */
-udt_def_t *udt_find_by_name(udt_def_t *head, const char *name);
+udt_entry_t* udt_find_by_name(udt_entry_t *entries, size_t count, const char *name);
 
 /**
- * Destroy entire UDT registry
+ * @brief Destroy UDT entry array
  *
- * Frees all linked UDT definitions and their members.
+ * Frees the UDT entry array.
  *
- * @param head Head of UDT linked list
+ * @param entries Array of UDT entries (may be NULL)
+ * @param count Number of entries in array (unused but provided for consistency)
  */
-void udt_destroy_all(udt_def_t *head);
-
-/**
- * Get the next auto-assigned UDT ID
- *
- * @return Next sequential UDT ID (starting from 1)
- */
-uint16_t udt_get_next_id(void);
-
-/**
- * Reset UDT ID counter (for testing)
- */
-void udt_reset_id_counter(void);
+void udt_array_destroy(udt_entry_t *entries, size_t count);
