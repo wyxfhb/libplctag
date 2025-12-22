@@ -10,10 +10,11 @@ add_executable(plc_server
     protocol/cip_message_router.c
     protocol/cip_path.c
     protocol/cip_object_registry.c
-    protocol/objects/symbol_object.c
+    protocol/objects/logix_symbol_object.c
     protocol/objects/udt_object.c
     protocol/objects/identity_object.c
     protocol/objects/connection_manager.c
+    protocol/objects/pccc_object.c
     protocol/objects/tag_name_server_omron.c
     protocol/objects/variable_object_omron.c
     protocol/objects/variable_type_object_omron.c
