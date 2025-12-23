@@ -98,17 +98,6 @@ bool reader_read_bytes(reader_t *r, uint8_t *out, size_t len) {
     return true;
 }
 
-bool reader_peek_u16_be(const reader_t *r, size_t offset, uint16_t *out) {
-    // Peek is relative to the start of the buffer (r->base)
-    if(r->err != 0) { return false; }
-    if(offset + 2 > r->size) {
-        return false;  // Not enough data to peek
-    }
-    uint8_t *p = r->base + offset;
-    if(out) { *out = ((uint16_t)p[0] << 8) | (uint16_t)p[1]; }
-    return true;
-}
-
 /* --- Writer Implementation --- */
 
 writer_t writer_init(uint8_t *buf, size_t size) {

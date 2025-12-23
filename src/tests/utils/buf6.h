@@ -34,16 +34,6 @@ bool reader_read_u64_le(reader_t *r, uint64_t *out);
 bool reader_read_u64_be(reader_t *r, uint64_t *out);
 bool reader_read_bytes(reader_t *r, uint8_t *out, size_t len);
 
-/**
- * @brief Peek at a 16-bit big-endian integer at a specific offset from the start of the buffer.
- * Does not advance the cursor.
- * @param r The reader.
- * @param offset Byte offset from the beginning of the reader's buffer.
- * @param out Pointer to store the peeked value.
- * @return true on success, false if the peek would read out of bounds.
- */
-bool reader_peek_u16_be(const reader_t *r, size_t offset, uint16_t *out);
-
 writer_t writer_init(uint8_t *buf, size_t size);
 
 size_t writer_remaining(const writer_t *w);
