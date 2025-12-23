@@ -231,14 +231,12 @@ void socket_close(SOCKET sock) {
 }
 
 
-int socket_accept(SOCKET sock, uint32_t timeout_ms, SOCKET *out_client_fd) {
+int stream_accept_connection(SOCKET sock, uint32_t timeout_ms, SOCKET *out_client_fd) {
     fd_set accept_fd_set;
     TIMEVAL timeout;
     int num_accept_ready = 0;
 
-    if(!out_client_fd) {
-        return (SOCKET)ERR_SOCKET_BAD_PARAM;
-    }
+    if(!out_client_fd) { return (SOCKET)ERR_SOCKET_BAD_PARAM; }
 
     *out_client_fd = INVALID_SOCKET;
 

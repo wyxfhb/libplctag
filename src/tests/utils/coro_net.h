@@ -239,7 +239,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
         do {                                                                                                            \
             __listen_fd = coro_get_fd(task);                                                                            \
             pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_DETAIL, "Attempting to accept connection on fd=%d", (int)__listen_fd); \
-            __err = socket_accept(__listen_fd, (client_fd_ptr), (client_addr));                                         \
+            __err = stream_accept_connection(__listen_fd, (client_fd_ptr), (client_addr));                              \
             pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_DETAIL, "Accept returned %s", util_err_str(__err));                    \
             if(__err == UTIL_EAGAIN) {                                                                                  \
                 pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_DETAIL, "Yielding on accept for fd=%d", (int)__listen_fd);         \
@@ -262,7 +262,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
         util_err_t __err;                                                               \
         do {                                                                            \
             __fd = coro_get_fd(task);                                                   \
-            __err = socket_connect(__fd, (address));                                    \
+            __err = stream_connect(__fd, (address));                                    \
             if(__err == UTIL_EAGAIN) {                                                  \
                 coro_wait_for_event((task), CORO_EVENT_CONNECT);                        \
                 __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */ \
@@ -286,7 +286,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
         util_err_t __err;                                                                                                       \
         do {                                                                                                                    \
             __fd = coro_get_fd(task);                                                                                           \
-            __err = socket_recv_buf(__fd, (buf));                                                                               \
+            __err = stream_read(__fd, (buf));                                                                                   \
             if(__err == UTIL_OK) {                                                                                              \
                 int64_t *__first_byte_ts_ptr = (first_byte_ts_ptr_arg);                                                         \
                 int64_t *__complete_ts_ptr = (complete_ts_ptr_arg);                                                             \
@@ -316,7 +316,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
         util_err_t __err;                                                               \
         do {                                                                            \
             __fd = coro_get_fd(task);                                                   \
-            __err = socket_recvfrom_buf(__fd, (from_addr), (buf));                      \
+            __err = dgram_receive(__fd, (from_addr), (buf));                            \
             if(__err == UTIL_EAGAIN) {                                                  \
                 coro_wait_for_event((task), CORO_EVENT_READ);                           \
                 __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */ \
@@ -337,7 +337,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
         util_err_t __err;                                                               \
         do {                                                                            \
             __fd = coro_get_fd(task);                                                   \
-            __err = socket_sendto_buf(__fd, (to_addr), (buf));                          \
+            __err = dgram_send(__fd, (to_addr), (buf));                                 \
             if(__err == UTIL_EAGAIN) {                                                  \
                 coro_wait_for_event((task), CORO_EVENT_WRITE);                          \
                 __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */ \
@@ -358,7 +358,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
         __err = UTIL_OK;                                                                \
         while(buf_read_size((buf)) > 0) {                                               \
             __fd = coro_get_fd(task);                                                   \
-            __err = socket_send_buf(__fd, (buf));                                       \
+            __err = stream_write(__fd, (buf));                                          \
             if(__err == UTIL_EAGAIN) {                                                  \
                 coro_wait_for_event((task), CORO_EVENT_WRITE);                          \
                 __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */ \

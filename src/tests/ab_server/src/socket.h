@@ -65,7 +65,7 @@ extern void socket_close(SOCKET sock);
  * Returns: 0 on success, error code on failure
  *          On success, *out_client_fd contains the accepted socket
  *          On failure, *out_client_fd is set to INVALID_SOCKET */
-extern int socket_accept(SOCKET sock, uint32_t timeout_ms, SOCKET *out_client_fd);
+extern int stream_accept_connection(SOCKET sock, uint32_t timeout_ms, SOCKET *out_client_fd);
 
 /* Read from socket into buffer
  * Returns: slice_s with data read from socket

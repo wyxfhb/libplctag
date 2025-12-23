@@ -769,7 +769,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* Create TCP server socket */
-        socket_t listen_fd = socket_create_tcp_server(&listen_address, 128);
+        socket_t listen_fd = stream_listener_socket_create(&listen_address, 128);
         if(listen_fd == INVALID_SOCKET) {
             pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_ERROR, "Failed to create TCP server on %s:%u: %s", addr_str, port,
                   util_err_str(socket_get_err()));

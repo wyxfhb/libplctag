@@ -120,7 +120,7 @@ static int socketpair(int domain, int type, int protocol, socket_t pair[2]) {
     // 1. Create a temporary listener socket on localhost:0 (ephemeral port)
     if(socket_address_init(&addr, "127.0.0.1", 0) != UTIL_OK) { return -1; }
 
-    listener = socket_create_tcp_server(&addr, 1);
+    listener = stream_listener_socket_create(&addr, 1);
     if(listener == INVALID_SOCKET) { return -1; }
 
     // 2. Get the assigned ephemeral port
@@ -137,20 +137,20 @@ static int socketpair(int domain, int type, int protocol, socket_t pair[2]) {
     }
 
     // 4. Create client socket and connect
-    client = socket_create_tcp();
+    client = stream_socket_create();
     if(client == INVALID_SOCKET) {
         socket_close(listener);
         return -1;
     }
 
-    if(socket_connect(client, &addr) != UTIL_OK) {
+    if(stream_connect(client, &addr) != UTIL_OK) {
         socket_close(listener);
         socket_close(client);
         return -1;
     }
 
     // 5. Accept the connection
-    if(socket_accept(listener, &server, NULL) != UTIL_OK) {
+    if(stream_accept_connection(listener, &server, NULL) != UTIL_OK) {
         socket_close(listener);
         socket_close(client);
         return -1;
