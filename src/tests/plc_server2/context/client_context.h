@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,7 +33,6 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -56,14 +57,14 @@ typedef struct client_context_s {
     buf_t send_buf;
 
     /* EIP Session Information */
-    uint32_t session_handle;           /* EIP session handle from RegisterSession */
-    uint32_t client_serial_number;     /* Client serial number for tracking */
+    uint32_t session_handle;       /* EIP session handle from RegisterSession */
+    uint32_t client_serial_number; /* Client serial number for tracking */
 
     /* Connection Manager State */
-    uint32_t client_connection_id;     /* Client-assigned connection ID */
-    uint32_t server_connection_id;     /* Server-assigned connection ID */
-    uint16_t server_to_client_max_packet;  /* Max packet size for S2C flow */
-    bool is_forward_open;              /* Whether ForwardOpen is active */
+    uint32_t client_connection_id;        /* Client-assigned connection ID */
+    uint32_t server_connection_id;        /* Server-assigned connection ID */
+    uint16_t server_to_client_max_packet; /* Max packet size for S2C flow */
+    bool is_forward_open;                 /* Whether ForwardOpen is active */
 
     /* Note: Reference to PLC context is obtained via:
      * ab_plc_context_t *plc = context_registry_get(context_reg, CONTEXT_ID_PLC)

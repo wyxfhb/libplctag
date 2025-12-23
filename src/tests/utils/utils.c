@@ -1,9 +1,42 @@
+/***************************************************************************
+ *   Copyright (C) 2025 by Kyle Hayes                                      *
+ *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
+ *                                                                         *
+ * This software is available under either the Mozilla Public License      *
+ * version 2.0 or the GNU LGPL version 2 (or later) license, whichever     *
+ * you choose.                                                             *
+ *                                                                         *
+ * MPL 2.0:                                                                *
+ *                                                                         *
+ *   This Source Code Form is subject to the terms of the Mozilla Public   *
+ *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
+ *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
+ *                                                                         *
+ *                                                                         *
+ * LGPL 2:                                                                 *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU Library General Public License as       *
+ *   published by the Free Software Foundation; either version 2 of the    *
+ *   License, or (at your option) any later version.                       *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU Library General Public     *
+ *   License along with this program; if not, write to the                 *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#    define WIN32_LEAN_AND_MEAN
+#    include <windows.h>
 #else
-#include <time.h>
-#include <sys/time.h>
+#    include <time.h>
+#    include <sys/time.h>
 #endif
 
 #include "utils.h"
@@ -43,20 +76,13 @@ int64_t util_time_us(void) {
      * The difference between 1601 and 1970 is 116444736000000000 in 100ns units.
      */
     int64_t intervals_since_epoch = (int64_t)uli.QuadPart - 116444736000000000LL;
-    return intervals_since_epoch / 10;  /* Convert 100ns units to microseconds */
+    return intervals_since_epoch / 10; /* Convert 100ns units to microseconds */
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return ((int64_t)tv.tv_sec * 1000000) + (int64_t)tv.tv_usec;
 #endif
 }
-
-
-
-
-
-
-
 
 
 /******************************************************************/
@@ -106,7 +132,7 @@ int util_set_interrupt_handler(void (*handler)(void)) {
 
 #else
 
-#include <signal.h>
+#    include <signal.h>
 
 static void (*interrupt_handler)(void) = NULL;
 
@@ -150,4 +176,3 @@ void util_sleep_ms(int ms) {
 }
 
 #endif
-

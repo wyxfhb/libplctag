@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,7 +33,6 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,8 +53,8 @@ typedef struct client_context_s client_context_t;
  * ============================================================================ */
 
 typedef struct {
-    uint8_t service;    /* Service code (0x4C, 0x4D, etc.) */
-    uint8_t path_size;  /* Path size in words */
+    uint8_t service;   /* Service code (0x4C, 0x4D, etc.) */
+    uint8_t path_size; /* Path size in words */
     /* Path data follows in buffer */
 } cip_request_t;
 

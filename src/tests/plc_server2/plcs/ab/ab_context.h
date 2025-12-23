@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,7 +33,6 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -47,8 +48,8 @@ extern "C" {
  * ============================================================================ */
 
 typedef enum {
-    PLC_TYPE_CONTROLLOGIX,   /* ControlLogix family */
-    PLC_TYPE_MICRO800,       /* Micro800 family (not yet implemented) */
+    PLC_TYPE_CONTROLLOGIX, /* ControlLogix family */
+    PLC_TYPE_MICRO800,     /* Micro800 family (not yet implemented) */
 } plc_type_t;
 
 /* ============================================================================
@@ -61,23 +62,23 @@ typedef enum {
 
 typedef struct ab_plc_context_s {
     plc_type_t plc_type;                /* PLC type (ControlLogix, Micro800, etc.) */
-    cip_class_registry_t *cip_registry;  /* CIP class/service registry */
+    cip_class_registry_t *cip_registry; /* CIP class/service registry */
 
     /* Tag and UDT Storage */
-    tag_def_t **tags;                   /* Array of tag pointers */
-    size_t tag_count;                   /* Number of tags */
-    size_t tag_capacity;                /* Capacity for tag array */
+    tag_def_t **tags;    /* Array of tag pointers */
+    size_t tag_count;    /* Number of tags */
+    size_t tag_capacity; /* Capacity for tag array */
 
-    udt_entry_t *udts;                  /* Array of UDT entries */
-    size_t udt_count;                   /* Number of UDTs */
-    size_t udt_capacity;                /* Capacity for UDT array */
+    udt_entry_t *udts;   /* Array of UDT entries */
+    size_t udt_count;    /* Number of UDTs */
+    size_t udt_capacity; /* Capacity for UDT array */
 
     /* Path Configuration */
-    uint8_t path[32];                   /* CIP path to PLC */
-    size_t path_len;                    /* Length of path in bytes */
+    uint8_t path[32]; /* CIP path to PLC */
+    size_t path_len;  /* Length of path in bytes */
 
     /* Session Management */
-    uint32_t next_session_id;           /* Next session ID to allocate */
+    uint32_t next_session_id; /* Next session ID to allocate */
 } ab_plc_context_t;
 
 /* ============================================================================

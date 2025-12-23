@@ -1,5 +1,39 @@
 #pragma once
 
+/***************************************************************************
+ *   Copyright (C) 2025 by Kyle Hayes                                      *
+ *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
+ *                                                                         *
+ * This software is available under either the Mozilla Public License      *
+ * version 2.0 or the GNU LGPL version 2 (or later) license, whichever     *
+ * you choose.                                                             *
+ *                                                                         *
+ * MPL 2.0:                                                                *
+ *                                                                         *
+ *   This Source Code Form is subject to the terms of the Mozilla Public   *
+ *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
+ *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
+ *                                                                         *
+ *                                                                         *
+ * LGPL 2:                                                                 *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU Library General Public License as       *
+ *   published by the Free Software Foundation; either version 2 of the    *
+ *   License, or (at your option) any later version.                       *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU Library General Public     *
+ *   License along with this program; if not, write to the                 *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -23,21 +57,17 @@ typedef struct {
  * @param num_bits Number of bits to allocate
  * @return modbus_bitarray_t* Pointer to new bit array, or NULL on failure
  */
-static inline modbus_bitarray_t* modbus_bitarray_create(size_t num_bits) {
-    if (num_bits == 0) {
-        return NULL;
-    }
+static inline modbus_bitarray_t *modbus_bitarray_create(size_t num_bits) {
+    if(num_bits == 0) { return NULL; }
 
     modbus_bitarray_t *arr = calloc(1, sizeof(*arr));
-    if (!arr) {
-        return NULL;
-    }
+    if(!arr) { return NULL; }
 
     arr->byte_count = (num_bits + 7) / 8;
     arr->bit_capacity = num_bits;
     arr->bytes = calloc(arr->byte_count, 1);
 
-    if (!arr->bytes) {
+    if(!arr->bytes) {
         free(arr);
         return NULL;
     }
@@ -49,7 +79,7 @@ static inline modbus_bitarray_t* modbus_bitarray_create(size_t num_bits) {
  * @brief Destroy a bit array.
  */
 static inline void modbus_bitarray_destroy(modbus_bitarray_t *arr) {
-    if (arr) {
+    if(arr) {
         free(arr->bytes);
         free(arr);
     }
@@ -63,9 +93,7 @@ static inline void modbus_bitarray_destroy(modbus_bitarray_t *arr) {
  * @return true if bit is set, false otherwise
  */
 static inline bool modbus_bitarray_get(const modbus_bitarray_t *arr, size_t bit_index) {
-    if (!arr || bit_index >= arr->bit_capacity) {
-        return false;
-    }
+    if(!arr || bit_index >= arr->bit_capacity) { return false; }
 
     size_t byte_idx = bit_index / 8;
     unsigned int bit_offset = bit_index % 8;
@@ -81,14 +109,12 @@ static inline bool modbus_bitarray_get(const modbus_bitarray_t *arr, size_t bit_
  * @param value true to set, false to clear
  */
 static inline void modbus_bitarray_set(modbus_bitarray_t *arr, size_t bit_index, bool value) {
-    if (!arr || bit_index >= arr->bit_capacity) {
-        return;
-    }
+    if(!arr || bit_index >= arr->bit_capacity) { return; }
 
     size_t byte_idx = bit_index / 8;
     unsigned int bit_offset = bit_index % 8;
 
-    if (value) {
+    if(value) {
         arr->bytes[byte_idx] |= (uint8_t)(1 << bit_offset);
     } else {
         arr->bytes[byte_idx] &= (uint8_t)~(1 << bit_offset);
@@ -106,18 +132,15 @@ static inline void modbus_bitarray_set(modbus_bitarray_t *arr, size_t bit_index,
  * @param out_bytes Output byte array (must have (num_bits+7)/8 bytes)
  * @return true on success, false if out of bounds
  */
-static inline bool modbus_bitarray_read_bits(const modbus_bitarray_t *arr,
-                                             size_t start_bit, size_t num_bits,
+static inline bool modbus_bitarray_read_bits(const modbus_bitarray_t *arr, size_t start_bit, size_t num_bits,
                                              uint8_t *out_bytes) {
-    if (!arr || !out_bytes || start_bit + num_bits > arr->bit_capacity) {
-        return false;
-    }
+    if(!arr || !out_bytes || start_bit + num_bits > arr->bit_capacity) { return false; }
 
     size_t out_byte_count = (num_bits + 7) / 8;
     memset(out_bytes, 0, out_byte_count);
 
-    for (size_t i = 0; i < num_bits; i++) {
-        if (modbus_bitarray_get(arr, start_bit + i)) {
+    for(size_t i = 0; i < num_bits; i++) {
+        if(modbus_bitarray_get(arr, start_bit + i)) {
             size_t out_byte_idx = i / 8;
             unsigned int out_bit_offset = i % 8;
             out_bytes[out_byte_idx] |= (uint8_t)(1 << out_bit_offset);
@@ -138,14 +161,11 @@ static inline bool modbus_bitarray_read_bits(const modbus_bitarray_t *arr,
  * @param in_bytes Input byte array
  * @return true on success, false if out of bounds
  */
-static inline bool modbus_bitarray_write_bits(modbus_bitarray_t *arr,
-                                              size_t start_bit, size_t num_bits,
+static inline bool modbus_bitarray_write_bits(modbus_bitarray_t *arr, size_t start_bit, size_t num_bits,
                                               const uint8_t *in_bytes) {
-    if (!arr || !in_bytes || start_bit + num_bits > arr->bit_capacity) {
-        return false;
-    }
+    if(!arr || !in_bytes || start_bit + num_bits > arr->bit_capacity) { return false; }
 
-    for (size_t i = 0; i < num_bits; i++) {
+    for(size_t i = 0; i < num_bits; i++) {
         size_t in_byte_idx = i / 8;
         unsigned int in_bit_offset = i % 8;
         bool bit_value = (in_bytes[in_byte_idx] & (1 << in_bit_offset)) != 0;

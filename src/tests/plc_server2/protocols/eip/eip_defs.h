@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,8 +33,6 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
-
 #include <stdint.h>
 
 /* ============================================================================
@@ -43,19 +43,19 @@
 #define EIP_HEADER_SIZE 24
 
 /* EIP Command Codes */
-#define EIP_CMD_NOP                 0x0000
-#define EIP_CMD_LIST_SERVICES       0x0004
-#define EIP_CMD_LIST_IDENTITY       0x0063
-#define EIP_CMD_LIST_INTERFACES     0x0064
-#define EIP_CMD_REGISTER_SESSION    0x0065
-#define EIP_CMD_UNREGISTER_SESSION  0x0066
-#define EIP_CMD_SEND_RR_DATA        0x006F  /* Unconnected message */
-#define EIP_CMD_SEND_UNIT_DATA      0x0070  /* Connected message */
+#define EIP_CMD_NOP 0x0000
+#define EIP_CMD_LIST_SERVICES 0x0004
+#define EIP_CMD_LIST_IDENTITY 0x0063
+#define EIP_CMD_LIST_INTERFACES 0x0064
+#define EIP_CMD_REGISTER_SESSION 0x0065
+#define EIP_CMD_UNREGISTER_SESSION 0x0066
+#define EIP_CMD_SEND_RR_DATA 0x006F   /* Unconnected message */
+#define EIP_CMD_SEND_UNIT_DATA 0x0070 /* Connected message */
 
 /* EIP Status Codes */
-#define EIP_STATUS_OK               0x0000  /* Command executed OK */
-#define EIP_STATUS_INVALID_CMD      0x0001  /* Invalid command */
-#define EIP_STATUS_NO_RESOURCES     0x0002  /* Device is unable to process command */
-#define EIP_STATUS_INVALID_DATA     0x0003  /* Error in data provided */
-#define EIP_STATUS_INVALID_SESSION  0x0064  /* Invalid Session Handle */
-#define EIP_STATUS_INVALID_LENGTH   0x0065  /* Encapsulation message too short */
+#define EIP_STATUS_OK 0x0000              /* Command executed OK */
+#define EIP_STATUS_INVALID_CMD 0x0001     /* Invalid command */
+#define EIP_STATUS_NO_RESOURCES 0x0002    /* Device is unable to process command */
+#define EIP_STATUS_INVALID_DATA 0x0003    /* Error in data provided */
+#define EIP_STATUS_INVALID_SESSION 0x0064 /* Invalid Session Handle */
+#define EIP_STATUS_INVALID_LENGTH 0x0065  /* Encapsulation message too short */

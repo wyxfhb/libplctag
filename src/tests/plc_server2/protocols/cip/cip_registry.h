@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,7 +33,6 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -78,14 +79,8 @@ typedef struct cip_path_s cip_path_t;
  * - Not modify the PLC context state
  */
 
-typedef util_err_t (*cip_service_handler_t)(
-    cip_service_code_t service_code,
-    cip_path_t *path,
-    buf_t *input,
-    buf_t *output,
-    ab_plc_context_t *plc,
-    client_context_t *client
-);
+typedef util_err_t (*cip_service_handler_t)(cip_service_code_t service_code, cip_path_t *path, buf_t *input, buf_t *output,
+                                            ab_plc_context_t *plc, client_context_t *client);
 
 /* ============================================================================
  * CIP Class Registry API
@@ -115,10 +110,7 @@ void cip_class_registry_destroy(cip_class_registry_t *registry);
  * @param class_id Class ID to use for symbolic routing (typically 0x6B for Symbol Object).
  * @return UTIL_OK on success, UTIL_EINVAL if registry is NULL.
  */
-util_err_t cip_class_registry_set_symbolic_handler_class(
-    cip_class_registry_t *registry,
-    cip_class_id_t class_id
-);
+util_err_t cip_class_registry_set_symbolic_handler_class(cip_class_registry_t *registry, cip_class_id_t class_id);
 
 /**
  * @brief Get the symbolic handler class.
@@ -126,9 +118,7 @@ util_err_t cip_class_registry_set_symbolic_handler_class(
  * @param registry Registry to query.
  * @return The class ID used for symbolic routing, or 0xFF if not set.
  */
-cip_class_id_t cip_class_registry_get_symbolic_handler_class(
-    cip_class_registry_t *registry
-);
+cip_class_id_t cip_class_registry_get_symbolic_handler_class(cip_class_registry_t *registry);
 
 /**
  * @brief Add a service handler to a class.
@@ -142,12 +132,8 @@ cip_class_id_t cip_class_registry_get_symbolic_handler_class(
  * @param handler Handler function pointer.
  * @return UTIL_OK on success, UTIL_EINVAL if registry or handler is NULL.
  */
-util_err_t cip_class_registry_add_service(
-    cip_class_registry_t *registry,
-    cip_class_id_t class_id,
-    cip_service_code_t service_code,
-    cip_service_handler_t handler
-);
+util_err_t cip_class_registry_add_service(cip_class_registry_t *registry, cip_class_id_t class_id,
+                                          cip_service_code_t service_code, cip_service_handler_t handler);
 
 /**
  * @brief Dispatch a service request to the appropriate handler.
@@ -167,15 +153,8 @@ util_err_t cip_class_registry_add_service(
  * @param client Client connection context passed to handler.
  * @return UTIL_OK if handler succeeded, error code otherwise.
  */
-util_err_t cip_class_registry_dispatch_service(
-    cip_class_registry_t *registry,
-    cip_path_t *path,
-    cip_service_code_t service_code,
-    buf_t *input,
-    buf_t *output,
-    ab_plc_context_t *plc,
-    client_context_t *client
-);
+util_err_t cip_class_registry_dispatch_service(cip_class_registry_t *registry, cip_path_t *path, cip_service_code_t service_code,
+                                               buf_t *input, buf_t *output, ab_plc_context_t *plc, client_context_t *client);
 
 #ifdef __cplusplus
 }

@@ -1,3 +1,5 @@
+#pragma once
+
 /***************************************************************************
  *   Copyright (C) 2025 by Kyle Hayes                                      *
  *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
@@ -31,7 +33,6 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-#pragma once
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,9 +65,7 @@ void context_registry_destroy(context_registry_t *registry);
  * @param context Pointer to the context data. Can be NULL.
  * @return UTIL_OK on success, UTIL_EBOUNDS if ID is invalid, UTIL_EINVAL if registry is NULL.
  */
-util_err_t context_registry_set(context_registry_t *registry,
-                                context_id_t context_id,
-                                void *context);
+util_err_t context_registry_set(context_registry_t *registry, context_id_t context_id, void *context);
 
 /**
  * @brief Get a context from the registry.
@@ -75,8 +74,7 @@ util_err_t context_registry_set(context_registry_t *registry,
  * @param context_id ID of the context to retrieve.
  * @return void* Pointer to the context, or NULL if not found or registry is NULL.
  */
-void *context_registry_get(context_registry_t *registry,
-                           context_id_t context_id);
+void *context_registry_get(context_registry_t *registry, context_id_t context_id);
 
 /**
  * @brief Remove a context from the registry.
@@ -85,8 +83,7 @@ void *context_registry_get(context_registry_t *registry,
  * @param context_id ID of the context to remove.
  * @return UTIL_OK on success, UTIL_ENOTFOUND if ID not set, UTIL_EINVAL if registry is NULL.
  */
-util_err_t context_registry_remove(context_registry_t *registry,
-                                   context_id_t context_id);
+util_err_t context_registry_remove(context_registry_t *registry, context_id_t context_id);
 
 #ifdef __cplusplus
 }

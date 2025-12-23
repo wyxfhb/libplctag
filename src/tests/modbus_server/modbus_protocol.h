@@ -1,5 +1,39 @@
 #pragma once
 
+/***************************************************************************
+ *   Copyright (C) 2025 by Kyle Hayes                                      *
+ *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
+ *                                                                         *
+ * This software is available under either the Mozilla Public License      *
+ * version 2.0 or the GNU LGPL version 2 (or later) license, whichever     *
+ * you choose.                                                             *
+ *                                                                         *
+ * MPL 2.0:                                                                *
+ *                                                                         *
+ *   This Source Code Form is subject to the terms of the Mozilla Public   *
+ *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
+ *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
+ *                                                                         *
+ *                                                                         *
+ * LGPL 2:                                                                 *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU Library General Public License as       *
+ *   published by the Free Software Foundation; either version 2 of the    *
+ *   License, or (at your option) any later version.                       *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU Library General Public     *
+ *   License along with this program; if not, write to the                 *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
+
 #include <stdint.h>
 #include <stdbool.h>
 #include "buf.h"
@@ -10,20 +44,20 @@
 #define MBAP_HEADER_SIZE 7
 
 /* Modbus Function Codes */
-#define MODBUS_FC_READ_COILS                0x01
-#define MODBUS_FC_READ_DISCRETE_INPUTS      0x02
-#define MODBUS_FC_READ_HOLDING_REGISTERS    0x03
-#define MODBUS_FC_READ_INPUT_REGISTERS      0x04
-#define MODBUS_FC_WRITE_SINGLE_COIL         0x05
-#define MODBUS_FC_WRITE_SINGLE_REGISTER     0x06
-#define MODBUS_FC_WRITE_MULTIPLE_COILS      0x0F
-#define MODBUS_FC_WRITE_MULTIPLE_REGISTERS  0x10
+#define MODBUS_FC_READ_COILS 0x01
+#define MODBUS_FC_READ_DISCRETE_INPUTS 0x02
+#define MODBUS_FC_READ_HOLDING_REGISTERS 0x03
+#define MODBUS_FC_READ_INPUT_REGISTERS 0x04
+#define MODBUS_FC_WRITE_SINGLE_COIL 0x05
+#define MODBUS_FC_WRITE_SINGLE_REGISTER 0x06
+#define MODBUS_FC_WRITE_MULTIPLE_COILS 0x0F
+#define MODBUS_FC_WRITE_MULTIPLE_REGISTERS 0x10
 
 /* Modbus Exception Codes */
-#define MODBUS_EXCEPTION_ILLEGAL_FUNCTION        0x01
-#define MODBUS_EXCEPTION_ILLEGAL_ADDRESS         0x02
-#define MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE      0x03
-#define MODBUS_EXCEPTION_DEVICE_FAILURE          0x04
+#define MODBUS_EXCEPTION_ILLEGAL_FUNCTION 0x01
+#define MODBUS_EXCEPTION_ILLEGAL_ADDRESS 0x02
+#define MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE 0x03
+#define MODBUS_EXCEPTION_DEVICE_FAILURE 0x04
 
 /* Maximum Modbus PDU size (260 bytes) */
 #define MODBUS_MAX_PDU_SIZE 260
@@ -63,9 +97,7 @@ util_err_t modbus_parse_mbap_header(buf_t *buf, mbap_header_t *header);
  * @param pdu_length Length of response PDU (not including MBAP)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t modbus_build_response_header(buf_t *response,
-                                        const mbap_header_t *req_header,
-                                        uint16_t pdu_length);
+util_err_t modbus_build_response_header(buf_t *response, const mbap_header_t *req_header, uint16_t pdu_length);
 
 /**
  * @brief Build Modbus exception response
@@ -74,10 +106,7 @@ util_err_t modbus_build_response_header(buf_t *response,
  * @param function_code Original function code
  * @param error Error code (will be mapped to Modbus exception)
  */
-void modbus_build_exception_response(buf_t *response,
-                                     const mbap_header_t *req_header,
-                                     uint8_t function_code,
-                                     util_err_t error);
+void modbus_build_exception_response(buf_t *response, const mbap_header_t *req_header, uint8_t function_code, util_err_t error);
 
 /**
  * @brief Process a Modbus request and generate response
@@ -88,8 +117,5 @@ void modbus_build_exception_response(buf_t *response,
  * @param storage Register storage
  * @return UTIL_OK on success, error code otherwise
  */
-util_err_t modbus_process_request(uint8_t function_code,
-                                  buf_t *request,
-                                  buf_t *response,
-                                  const mbap_header_t *req_header,
+util_err_t modbus_process_request(uint8_t function_code, buf_t *request, buf_t *response, const mbap_header_t *req_header,
                                   register_storage_t *storage);

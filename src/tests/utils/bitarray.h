@@ -1,4 +1,38 @@
 #pragma once
+
+/***************************************************************************
+ *   Copyright (C) 2025 by Kyle Hayes                                      *
+ *   Author Kyle Hayes  kyle.hayes@gmail.com                               *
+ *                                                                         *
+ * This software is available under either the Mozilla Public License      *
+ * version 2.0 or the GNU LGPL version 2 (or later) license, whichever     *
+ * you choose.                                                             *
+ *                                                                         *
+ * MPL 2.0:                                                                *
+ *                                                                         *
+ *   This Source Code Form is subject to the terms of the Mozilla Public   *
+ *   License, v. 2.0. If a copy of the MPL was not distributed with this   *
+ *   file, You can obtain one at http://mozilla.org/MPL/2.0/.              *
+ *                                                                         *
+ *                                                                         *
+ * LGPL 2:                                                                 *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU Library General Public License as       *
+ *   published by the Free Software Foundation; either version 2 of the    *
+ *   License, or (at your option) any later version.                       *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU Library General Public     *
+ *   License along with this program; if not, write to the                 *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -26,9 +60,7 @@ typedef struct {
  * @param index Bit index (0-63)
  */
 static inline void bitarray_set(bitarray_t *ba, unsigned int index) {
-    if (index < 64) {
-        ba->bits |= (1ULL << index);
-    }
+    if(index < 64) { ba->bits |= (1ULL << index); }
 }
 
 /**
@@ -37,9 +69,7 @@ static inline void bitarray_set(bitarray_t *ba, unsigned int index) {
  * @param index Bit index (0-63)
  */
 static inline void bitarray_clear(bitarray_t *ba, unsigned int index) {
-    if (index < 64) {
-        ba->bits &= ~(1ULL << index);
-    }
+    if(index < 64) { ba->bits &= ~(1ULL << index); }
 }
 
 /**
@@ -49,9 +79,7 @@ static inline void bitarray_clear(bitarray_t *ba, unsigned int index) {
  * @return true if bit is set, false otherwise
  */
 static inline bool bitarray_test(const bitarray_t *ba, unsigned int index) {
-    if (index < 64) {
-        return (ba->bits & (1ULL << index)) != 0;
-    }
+    if(index < 64) { return (ba->bits & (1ULL << index)) != 0; }
     return false;
 }
 
@@ -59,26 +87,20 @@ static inline bool bitarray_test(const bitarray_t *ba, unsigned int index) {
  * @brief Clear all bits (set to zero).
  * @param ba Pointer to bitarray
  */
-static inline void bitarray_clear_all(bitarray_t *ba) {
-    ba->bits = 0;
-}
+static inline void bitarray_clear_all(bitarray_t *ba) { ba->bits = 0; }
 
 /**
  * @brief Set all bits (set to UINT64_MAX).
  * @param ba Pointer to bitarray
  */
-static inline void bitarray_set_all(bitarray_t *ba) {
-    ba->bits = UINT64_MAX;
-}
+static inline void bitarray_set_all(bitarray_t *ba) { ba->bits = UINT64_MAX; }
 
 /**
  * @brief Check if any bit is set.
  * @param ba Pointer to bitarray
  * @return true if any bit is set, false if all bits are zero
  */
-static inline bool bitarray_has_any(const bitarray_t *ba) {
-    return ba->bits != 0;
-}
+static inline bool bitarray_has_any(const bitarray_t *ba) { return ba->bits != 0; }
 
 /**
  * @brief Check if any bit is set in both this and mask.
@@ -86,27 +108,21 @@ static inline bool bitarray_has_any(const bitarray_t *ba) {
  * @param mask Pointer to mask bitarray
  * @return true if (ba->bits & mask->bits) != 0
  */
-static inline bool bitarray_has_any_masked(const bitarray_t *ba, const bitarray_t *mask) {
-    return (ba->bits & mask->bits) != 0;
-}
+static inline bool bitarray_has_any_masked(const bitarray_t *ba, const bitarray_t *mask) { return (ba->bits & mask->bits) != 0; }
 
 /**
  * @brief Clear bits that are set in the mask.
  * @param ba Pointer to bitarray to modify
  * @param mask Pointer to mask bitarray
  */
-static inline void bitarray_clear_masked(bitarray_t *ba, const bitarray_t *mask) {
-    ba->bits &= ~mask->bits;
-}
+static inline void bitarray_clear_masked(bitarray_t *ba, const bitarray_t *mask) { ba->bits &= ~mask->bits; }
 
 /**
  * @brief Assign one bitarray to another.
  * @param dst Destination bitarray
  * @param src Source bitarray
  */
-static inline void bitarray_assign(bitarray_t *dst, const bitarray_t *src) {
-    dst->bits = src->bits;
-}
+static inline void bitarray_assign(bitarray_t *dst, const bitarray_t *src) { dst->bits = src->bits; }
 
 /**
  * @brief Compute bitwise AND of two bitarrays.
@@ -114,9 +130,7 @@ static inline void bitarray_assign(bitarray_t *dst, const bitarray_t *src) {
  * @param b Second bitarray
  * @return New bitarray with result of a AND b
  */
-static inline bitarray_t bitarray_and(const bitarray_t *a, const bitarray_t *b) {
-    return (bitarray_t){a->bits & b->bits};
-}
+static inline bitarray_t bitarray_and(const bitarray_t *a, const bitarray_t *b) { return (bitarray_t){a->bits & b->bits}; }
 
 /**
  * @brief Check if two bitarrays are equal.
@@ -124,6 +138,4 @@ static inline bitarray_t bitarray_and(const bitarray_t *a, const bitarray_t *b) 
  * @param b Second bitarray
  * @return true if all bits are identical, false otherwise
  */
-static inline bool bitarray_equal(const bitarray_t *a, const bitarray_t *b) {
-    return a->bits == b->bits;
-}
+static inline bool bitarray_equal(const bitarray_t *a, const bitarray_t *b) { return a->bits == b->bits; }
