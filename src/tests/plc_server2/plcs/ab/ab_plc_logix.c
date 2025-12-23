@@ -48,7 +48,7 @@
 #include "connection_manager.h"
 
 /* Constants */
-#define MAX_DIMS 4 /* Maximum array dimensions for tags */
+#define MAX_DIMS 4   /* Maximum array dimensions for tags */
 #define MAX_TAGS 100 /* Maximum number of tags */
 
 /* ============================================================================
@@ -58,20 +58,14 @@
 /**
  * Parse a tag specification like "TestBigArray:DINT[100]" or "MyTag:INT[10,20]"
  */
-static util_err_t parse_tag_spec(const char *spec, size_t spec_len,
-                                 char *name_out, size_t name_size,
-                                 char *type_out, size_t type_size,
-                                 size_t *dims_out, size_t *dim_count_out) {
+static util_err_t parse_tag_spec(const char *spec, size_t spec_len, char *name_out, size_t name_size, char *type_out,
+                                 size_t type_size, size_t *dims_out, size_t *dim_count_out) {
     /* Find the colon separating name and type */
     const char *colon = memchr(spec, ':', spec_len);
-    if(!colon) {
-        return UTIL_EINVAL;
-    }
+    if(!colon) { return UTIL_EINVAL; }
 
     size_t name_len = colon - spec;
-    if(name_len >= name_size) {
-        return UTIL_EBOUNDS;
-    }
+    if(name_len >= name_size) { return UTIL_EBOUNDS; }
 
     memcpy(name_out, spec, name_len);
     name_out[name_len] = '\0';
@@ -81,9 +75,7 @@ static util_err_t parse_tag_spec(const char *spec, size_t spec_len,
     if(!bracket) {
         /* No brackets means scalar type */
         size_t type_len = spec_len - name_len - 1;
-        if(type_len >= type_size) {
-            return UTIL_EBOUNDS;
-        }
+        if(type_len >= type_size) { return UTIL_EBOUNDS; }
         memcpy(type_out, colon + 1, type_len);
         type_out[type_len] = '\0';
         *dim_count_out = 0;
@@ -92,9 +84,7 @@ static util_err_t parse_tag_spec(const char *spec, size_t spec_len,
 
     /* Extract type between colon and bracket */
     size_t type_len = bracket - colon - 1;
-    if(type_len >= type_size) {
-        return UTIL_EBOUNDS;
-    }
+    if(type_len >= type_size) { return UTIL_EBOUNDS; }
     memcpy(type_out, colon + 1, type_len);
     type_out[type_len] = '\0';
 
@@ -105,27 +95,19 @@ static util_err_t parse_tag_spec(const char *spec, size_t spec_len,
         const char *dim_end = memchr(dim_start, ',', spec + spec_len - dim_start);
         const char *bracket_end = memchr(dim_start, ']', spec + spec_len - dim_start);
 
-        if(!bracket_end) {
-            return UTIL_EINVAL;
-        }
+        if(!bracket_end) { return UTIL_EINVAL; }
 
-        if(!dim_end || dim_end > bracket_end) {
-            dim_end = bracket_end;
-        }
+        if(!dim_end || dim_end > bracket_end) { dim_end = bracket_end; }
 
         char dim_str[32] = {0};
         size_t dim_str_len = dim_end - dim_start;
-        if(dim_str_len >= sizeof(dim_str)) {
-            return UTIL_EBOUNDS;
-        }
+        if(dim_str_len >= sizeof(dim_str)) { return UTIL_EBOUNDS; }
 
         memcpy(dim_str, dim_start, dim_str_len);
         dims_out[dim_idx] = (size_t)atol(dim_str);
         dim_idx++;
 
-        if(dim_end == bracket_end) {
-            break;
-        }
+        if(dim_end == bracket_end) { break; }
 
         dim_start = dim_end + 1; /* Skip comma */
     }
@@ -316,10 +298,10 @@ util_err_t ab_plc_logix_main(const args_result_t *args, coro_net_t *coro) {
         while(path_idx < sizeof(plc->path) && *pos) {
             char *endptr = NULL;
             long val = strtol(pos, &endptr, 0);
-            if(endptr == pos) break;
+            if(endptr == pos) { break; }
             plc->path[path_idx++] = (uint8_t)val;
             pos = endptr;
-            if(*pos == ',') pos++;
+            if(*pos == ',') { pos++; }
         }
         plc->path_len = path_idx;
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Using path: %zu bytes", plc->path_len);
@@ -357,7 +339,8 @@ util_err_t ab_plc_logix_main(const args_result_t *args, coro_net_t *coro) {
             size_t tag_dims[MAX_DIMS] = {0};
             size_t tag_dim_count = 0;
 
-            rc = parse_tag_spec(tag_spec, tag_spec_len, tag_name, sizeof(tag_name), tag_type, sizeof(tag_type), tag_dims, &tag_dim_count);
+            rc = parse_tag_spec(tag_spec, tag_spec_len, tag_name, sizeof(tag_name), tag_type, sizeof(tag_type), tag_dims,
+                                &tag_dim_count);
             if(rc != UTIL_OK) {
                 pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_WARN, "Failed to parse tag spec '%s': %s", tag_spec, util_err_str(rc));
                 continue;
@@ -442,7 +425,7 @@ util_err_t ab_plc_logix_main(const args_result_t *args, coro_net_t *coro) {
         return rc;
     }
 
-    socket_t listen_fd = socket_create_tcp_server(&listen_addr, 10);
+    socket_t listen_fd = stream_listener_socket_create(&listen_addr, 10);
     if(listen_fd == INVALID_SOCKET) {
         pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_ERROR, "Failed to create listener socket");
         ab_plc_context_destroy(plc);
