@@ -198,7 +198,7 @@ uint16_t socket_address_get_port(const socket_address_t *addr) {
  * Socket creation
  * ================================================================ */
 
-socket_t socket_create_tcp(void) {
+socket_t stream_socket_create(void) {
     socket_t sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(sock == INVALID_SOCKET) {
 #ifdef _WIN32
@@ -221,7 +221,7 @@ socket_t socket_create_tcp(void) {
     return sock;
 }
 
-socket_t socket_create_udp(void) {
+socket_t dgram_socket_create(void) {
     socket_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if(sock == INVALID_SOCKET) {
 #ifdef _WIN32
@@ -244,7 +244,7 @@ socket_t socket_create_udp(void) {
     return sock;
 }
 
-socket_t socket_create_tcp_server(socket_address_t *address, int backlog) {
+socket_t stream_listener_socket_create(socket_address_t *address, int backlog) {
     if(address == NULL || backlog <= 0) { return INVALID_SOCKET; }
 
     socket_t sock = socket(((struct sockaddr *)&address->addr)->sa_family, SOCK_STREAM, IPPROTO_TCP);
@@ -296,7 +296,7 @@ socket_t socket_create_tcp_server(socket_address_t *address, int backlog) {
     return sock;
 }
 
-socket_t socket_create_udp_server(socket_address_t *address) {
+socket_t dgram_listener_socket_create(socket_address_t *address) {
     if(address == NULL) { return INVALID_SOCKET; }
 
     socket_t sock = socket(((struct sockaddr *)&address->addr)->sa_family, SOCK_DGRAM, IPPROTO_UDP);
@@ -410,7 +410,7 @@ util_err_t socket_set_broadcast(socket_t sock, bool broadcast) {
  * Connection
  * ================================================================ */
 
-util_err_t socket_accept(socket_t server, socket_t *out_client, socket_address_t *out_client_addr) {
+util_err_t stream_accept_connection(socket_t server, socket_t *out_client, socket_address_t *out_client_addr) {
     if(server == INVALID_SOCKET || out_client == NULL) { return UTIL_EINVAL; }
 
     struct sockaddr_storage client_addr;
@@ -452,7 +452,7 @@ util_err_t socket_accept(socket_t server, socket_t *out_client, socket_address_t
     return UTIL_OK;
 }
 
-util_err_t socket_connect(socket_t sock, socket_address_t *address) {
+util_err_t stream_connect(socket_t sock, socket_address_t *address) {
     if(sock == INVALID_SOCKET || address == NULL) { return UTIL_EINVAL; }
 
     int result = connect(sock, (struct sockaddr *)&address->addr, address->addr_len);
@@ -473,345 +473,62 @@ util_err_t socket_connect(socket_t sock, socket_address_t *address) {
  * Data transfer (Stream)
  * ================================================================ */
 
-util_err_t socket_send_buf(socket_t sock, buf_t *out) {
+util_err_t stream_write(socket_t sock, packet_builder_t *out) {
     if(sock == INVALID_SOCKET || out == NULL) { return UTIL_EINVAL; }
 
-    if(!buf_ok(out)) { return UTIL_EINVAL; }
+    if(pb_get_err(out) != UTIL_OK) { return pb_get_err(out); }
 
-    size_t to_send = buf_read_size(out);
+    /* compress the packet builder */
+    size_t to_send = pb_compact(out);
+
+    if(to_send == PB_INVALID_SEGMENT_SIZE) { return pb_get_err(out); }
+
     if(to_send == 0) { return UTIL_OK; /* Nothing to send */ }
 
-    const uint8_t *data = buf_read_ptr(out);
+    uint8_t *data = pb_get_base_ptr(out);
 
-    pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, "socket_send_buf: Attempting to send %zu bytes", to_send);
+    if(data == NULL) {
+        pb_set_err(out, UTIL_ENULL);
+        return UTIL_ENULL;
+    }
+
+    pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, "Attempting to send %zu bytes", to_send);
     pdlog_bytes(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, out);
 
 #ifdef _WIN32
     int sent = send(sock, (const char *)data, (int)to_send, 0);
     if(sent == SOCKET_ERROR) { return util_err_from_wsa(WSAGetLastError()); }
 #else
-    /* Use MSG_NOSIGNAL to prevent SIGPIPE on Unix */
+    /* Use MSG_NOSIGNAL to prevent SIGPIPE on POSIX, ignored on macOS and BSD */
     ssize_t sent = send(sock, data, to_send, MSG_NOSIGNAL);
     if(sent < 0) {
-        pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_ERROR, "socket_send_buf: send() failed with errno %d", errno);
+        pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_ERROR, "send() failed with errno %d", errno);
         return util_err_from_errno(errno);
     }
 #endif
 
-    pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, "socket_send_buf: Successfully sent %zd bytes out of %zu", sent, to_send);
+    pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, "Successfully sent %zd bytes out of %zu", sent, to_send);
 
     /* Advance read cursor by amount actually sent */
-    buf_read_advance(out, (size_t)sent);
+    /* FIXME - what to do here? */
+    if(!pb_consume_compacted(out, (size_t)sent)) { return pb_get_err(out); }
 
-    return UTIL_OK;
+    return (pb_get_total_len(out) > 0) ? UTIL_EAGAIN : UTIL_OK;
 }
 
-util_err_t socket_sendv_buf(socket_t sock, buf_t **segments, size_t segment_count) {
-    if(!segments || segment_count == 0) { return UTIL_EABORT; }
 
-    /* Check if segment count exceeds maximum */
-    if(segment_count > SOCKET_MAX_IOVECS) { return UTIL_EABORT; }
+util_err_t stream_read(socket_t sock, data_reader_t *in) {
+    if(sock == INVALID_SOCKET) { return UTIL_EINVAL; }
 
-    /* Check if all segments are empty */
-    bool all_empty = true;
-    for(size_t i = 0; i < segment_count; i++) {
-        if(buf_read_size(segments[i]) > 0) {
-            all_empty = false;
-            break;
-        }
-    }
-    if(all_empty) { return UTIL_OK; }
+    if(data_reader_get_err(in) != UTIL_OK) { return data_reader_get_err(in); }
 
-#if defined(_WIN32)
-    /* Windows: use WSASend with WSABUF array */
-    WSABUF bufs[SOCKET_MAX_IOVECS];
-    DWORD buf_count = 0;
+    /* compact the buffer so that we have the maximum space available */
+    if(!data_reader_compact(in)) { return data_reader_get_err(in); }
 
-    for(size_t i = 0; i < segment_count; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        if(sz > 0) {
-            bufs[buf_count].buf = (char *)buf_read_ptr(segments[i]);
-            bufs[buf_count].len = (ULONG)sz;
-            buf_count++;
-        }
-    }
-
-    DWORD bytes_sent = 0;
-    int result = WSASend(sock, bufs, buf_count, &bytes_sent, 0, NULL, NULL);
-
-    if(result == SOCKET_ERROR) {
-        int err = WSAGetLastError();
-        if(err == WSAEWOULDBLOCK) { return UTIL_EAGAIN; }
-        return util_err_from_wsa(err);
-    }
-
-    /* Advance buffers by bytes_sent */
-    size_t remaining = bytes_sent;
-    for(size_t i = 0; i < segment_count && remaining > 0; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        size_t consumed = (sz < remaining) ? sz : remaining;
-        buf_read_advance(segments[i], consumed);
-        remaining -= consumed;
-    }
-
-    /* Check if more data remains */
-    bool has_remaining = false;
-    for(size_t i = 0; i < segment_count; i++) {
-        if(buf_read_size(segments[i]) > 0) {
-            has_remaining = true;
-            break;
-        }
-    }
-
-    return has_remaining ? UTIL_EAGAIN : UTIL_OK;
-
-#elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
-    /* Unix: use sendmsg with iovec array for signal safety */
-    struct iovec vecs[SOCKET_MAX_IOVECS];
-    size_t vec_count = 0;
-
-    for(size_t i = 0; i < segment_count; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        if(sz > 0) {
-            vecs[vec_count].iov_base = (void *)buf_read_ptr(segments[i]);
-            vecs[vec_count].iov_len = sz;
-            vec_count++;
-        }
-    }
-
-#    ifdef UTIL_BSD_OS_TYPE
-    /* On BSD/macOS, SO_NOSIGPIPE was set at socket creation, use writev() */
-    ssize_t sent = writev(sock, vecs, (int)vec_count);
-#    else
-    /* On Linux, use sendmsg() with MSG_NOSIGNAL to prevent SIGPIPE */
-    struct msghdr msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_iov = vecs;
-    msg.msg_iovlen = (size_t)vec_count;
-    /* MSG_NOSIGNAL is Linux-specific */
-    ssize_t sent = sendmsg(sock, &msg, MSG_NOSIGNAL);
-#    endif
-
-    if(sent < 0) {
-        if(errno == EAGAIN || errno == EWOULDBLOCK) { return UTIL_EAGAIN; }
-        return util_err_from_errno(errno);
-    }
-
-    /* Advance buffers by sent bytes */
-    size_t remaining = (size_t)sent;
-    for(size_t i = 0; i < segment_count && remaining > 0; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        size_t consumed = (sz < remaining) ? sz : remaining;
-        buf_read_advance(segments[i], consumed);
-        remaining -= consumed;
-    }
-
-    /* Check if more data remains */
-    bool has_remaining = false;
-    for(size_t i = 0; i < segment_count; i++) {
-        if(buf_read_size(segments[i]) > 0) {
-            has_remaining = true;
-            break;
-        }
-    }
-
-    return has_remaining ? UTIL_EAGAIN : UTIL_OK;
-
-#else
-    /* Fallback: sequential send() */
-    for(size_t i = 0; i < segment_count; i++) {
-        while(buf_read_size(segments[i]) > 0) {
-            util_err_t err = socket_send_buf(sock, segments[i]);
-            if(err != UTIL_OK) { return err; }
-        }
-    }
-
-    return UTIL_OK;
-#endif
-}
-
-/* ================================================================
- * Data transfer (Datagram)
- * ================================================================ */
-
-util_err_t socket_sendto_buf(socket_t sock, socket_address_t *addr, buf_t *out) {
-    if(sock == INVALID_SOCKET || addr == NULL || out == NULL) { return UTIL_EINVAL; }
-
-    if(!buf_ok(out)) { return UTIL_EINVAL; }
-
-    size_t to_send = buf_read_size(out);
-    if(to_send == 0) { return UTIL_OK; /* Nothing to send */ }
-
-    const uint8_t *data = buf_read_ptr(out);
-
-#ifdef _WIN32
-    int sent = sendto(sock, (const char *)data, (int)to_send, 0, (struct sockaddr *)&addr->addr, addr->addr_len);
-    if(sent == SOCKET_ERROR) { return util_err_from_wsa(WSAGetLastError()); }
-#else
-    /* Use MSG_NOSIGNAL to prevent SIGPIPE on Unix */
-    ssize_t sent = sendto(sock, data, to_send, MSG_NOSIGNAL, (struct sockaddr *)&addr->addr, addr->addr_len);
-    if(sent < 0) { return util_err_from_errno(errno); }
-#endif
-
-    /* Advance read cursor by amount actually sent */
-    buf_read_advance(out, (size_t)sent);
-
-    return UTIL_OK;
-}
-
-util_err_t socket_sendtov_buf(socket_t sock, socket_address_t *addr, buf_t **segments, size_t segment_count) {
-    if(!addr || !segments || segment_count == 0) { return UTIL_EABORT; }
-
-    /* Check if segment count exceeds maximum */
-    if(segment_count > SOCKET_MAX_IOVECS) { return UTIL_EABORT; }
-
-    /* Check if all segments are empty */
-    bool all_empty = true;
-    size_t total_size = 0;
-    for(size_t i = 0; i < segment_count; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        total_size += sz;
-        if(sz > 0) { all_empty = false; }
-    }
-    if(all_empty) { return UTIL_OK; }
-
-#if defined(_WIN32)
-    /* Windows: use WSASendTo with WSABUF array */
-    WSABUF bufs[SOCKET_MAX_IOVECS];
-    DWORD buf_count = 0;
-
-    for(size_t i = 0; i < segment_count; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        if(sz > 0) {
-            bufs[buf_count].buf = (char *)buf_read_ptr(segments[i]);
-            bufs[buf_count].len = (ULONG)sz;
-            buf_count++;
-        }
-    }
-
-    DWORD bytes_sent = 0;
-    int result = WSASendTo(sock, bufs, buf_count, &bytes_sent, 0, (struct sockaddr *)&addr->addr, addr->addr_len, NULL, NULL);
-
-    if(result == SOCKET_ERROR) {
-        int err = WSAGetLastError();
-        if(err == WSAEWOULDBLOCK) { return UTIL_EAGAIN; }
-        return util_err_from_wsa(err);
-    }
-
-    /* For datagrams, either all is sent or none */
-    if(bytes_sent == total_size) {
-        for(size_t i = 0; i < segment_count; i++) {
-            size_t sz = buf_read_size(segments[i]);
-            buf_read_advance(segments[i], sz);
-        }
-        return UTIL_OK;
-    }
-
-    return UTIL_EABORT;
-
-#elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
-    /* Unix: use sendmsg with iovec array */
-    struct iovec vecs[SOCKET_MAX_IOVECS]; /* Fixed-size array instead of alloca() */
-    size_t vec_count = 0;
-
-    for(size_t i = 0; i < segment_count; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        if(sz > 0) {
-            vecs[vec_count].iov_base = (void *)buf_read_ptr(segments[i]);
-            vecs[vec_count].iov_len = sz;
-            vec_count++;
-        }
-    }
-
-    struct msghdr msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_name = (void *)&addr->addr;
-    msg.msg_namelen = addr->addr_len;
-    msg.msg_iov = vecs;
-    msg.msg_iovlen = (int)vec_count;
-
-#    ifdef UTIL_BSD_OS_TYPE
-    /* On BSD/macOS, SO_NOSIGPIPE was set at socket creation */
-    ssize_t sent = sendmsg(sock, &msg, 0);
-#    else
-    /* On Linux, MSG_NOSIGNAL prevents SIGPIPE when writing to closed sockets */
-    ssize_t sent = sendmsg(sock, &msg, MSG_NOSIGNAL);
-#    endif
-
-    if(sent < 0) {
-        if(errno == EAGAIN || errno == EWOULDBLOCK) { return UTIL_EAGAIN; }
-        return util_err_from_errno(errno);
-    }
-
-    /* For datagrams, either all is sent or none */
-    if((size_t)sent == total_size) {
-        for(size_t i = 0; i < segment_count; i++) {
-            size_t sz = buf_read_size(segments[i]);
-            buf_read_advance(segments[i], sz);
-        }
-        return UTIL_OK;
-    }
-
-    return UTIL_EABORT;
-
-#else
-    /* Fallback: concatenate and use single sendto() */
-    /* Check that total payload fits in fixed buffer */
-    if(total_size > SOCKET_MAX_PAYLOAD) { return UTIL_EABORT; /* Payload too large for fallback implementation */ }
-
-    uint8_t temp_buf[SOCKET_MAX_PAYLOAD]; /* Fixed-size buffer instead of alloca() */
-    size_t offset = 0;
-
-    for(size_t i = 0; i < segment_count; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        if(sz > 0) {
-            memcpy(temp_buf + offset, buf_read_ptr(segments[i]), sz);
-            offset += sz;
-        }
-    }
-
-#    ifdef _WIN32
-    ssize_t sent = sendto(sock, temp_buf, total_size, 0, (struct sockaddr *)&addr->addr, addr->addr_len);
-#    elif defined(UTIL_BSD_OS_TYPE)
-    /* On BSD/macOS, SO_NOSIGPIPE was set at socket creation */
-    ssize_t sent = sendto(sock, temp_buf, total_size, 0, (struct sockaddr *)&addr->addr, addr->addr_len);
-#    else
-    /* On Linux, use MSG_NOSIGNAL to prevent SIGPIPE */
-    ssize_t sent = sendto(sock, temp_buf, total_size, MSG_NOSIGNAL, (struct sockaddr *)&addr->addr, addr->addr_len);
-#    endif
-
-    if(sent < 0) {
-        if(errno == EAGAIN || errno == EWOULDBLOCK) { return UTIL_EAGAIN; }
-        return util_err_from_errno(errno);
-    }
-
-    /* Advance buffers by sent bytes */
-    size_t remaining = (size_t)sent;
-    for(size_t i = 0; i < segment_count && remaining > 0; i++) {
-        size_t sz = buf_read_size(segments[i]);
-        size_t consumed = (sz < remaining) ? sz : remaining;
-        buf_read_advance(segments[i], consumed);
-        remaining -= consumed;
-    }
-
-    /* Check if more data remains */
-    for(size_t i = 0; i < segment_count; i++) {
-        if(buf_read_size(segments[i]) > 0) { return UTIL_EAGAIN; }
-    }
-
-    return UTIL_OK;
-#endif
-}
-
-util_err_t socket_recv_buf(socket_t sock, buf_t *in) {
-    if(sock == INVALID_SOCKET || in == NULL) { return UTIL_EINVAL; }
-
-    if(!buf_ok(in)) { return UTIL_EINVAL; }
-
-    size_t capacity = buf_write_size(in);
+    size_t capacity = data_reader_write_size(in);
     if(capacity == 0) { return UTIL_ERESOURCE; /* No space in buffer */ }
 
-    uint8_t *write_ptr = buf_write_ptr(in);
+    uint8_t *write_ptr = data_reader_write_ptr(in);
 
 #ifdef _WIN32
     int received = recv(sock, (char *)write_ptr, (int)capacity, 0);
@@ -824,20 +541,59 @@ util_err_t socket_recv_buf(socket_t sock, buf_t *in) {
 #endif
 
     /* Advance write cursor by amount received */
-    buf_write_advance(in, (size_t)received);
+    data_reader_write_advance(in, (size_t)received);
 
-    return UTIL_OK;
+    return data_reader_get_err(in);
 }
 
-util_err_t socket_recvfrom_buf(socket_t sock, socket_address_t *from_addr, buf_t *in) {
+
+/* ================================================================
+ * Data transfer (Datagram)
+ * ================================================================ */
+
+util_err_t dgram_send(socket_t sock, socket_address_t *addr, packet_builder_t *out) {
+    if(sock == INVALID_SOCKET || addr == NULL || out == NULL) { return UTIL_EINVAL; }
+
+    if(pb_get_err(out) != UTIL_OK) { return pb_get_err(out); }
+
+    size_t to_send = pb_compact(out);
+
+    if(to_send == PB_INVALID_SEGMENT_SIZE) { return pb_get_err(out); }
+
+    if(to_send == 0) { return UTIL_OK; /* Nothing to send */ }
+
+    const uint8_t *data = pb_get_base_ptr(out);
+
+#ifdef _WIN32
+    int sent = sendto(sock, (const char *)data, (int)to_send, 0, (struct sockaddr *)&addr->addr, addr->addr_len);
+    if(sent == SOCKET_ERROR) { return util_err_from_wsa(WSAGetLastError()); }
+#else
+    /* Use MSG_NOSIGNAL to prevent SIGPIPE on Unix */
+    ssize_t sent = sendto(sock, data, to_send, MSG_NOSIGNAL, (struct sockaddr *)&addr->addr, addr->addr_len);
+    if(sent < 0) { return util_err_from_errno(errno); }
+#endif
+
+    /* Advance read cursor by amount actually sent */
+    pb_consume_compacted(out, (size_t)sent);
+
+    /* FIXME - is this the right logic here?  We might not want to send more if we sent a partial packet for UDP? */
+    return (pb_get_total_len(out) > 0) ? UTIL_EAGAIN : UTIL_OK;
+}
+
+
+util_err_t dgram_receive(socket_t sock, socket_address_t *from_addr, data_reader_t *in) {
     if(sock == INVALID_SOCKET || from_addr == NULL || in == NULL) { return UTIL_EINVAL; }
 
-    if(!buf_ok(in)) { return UTIL_EINVAL; }
+    if(data_reader_get_err(in) != UTIL_OK) { return data_reader_get_err(in); }
 
-    size_t capacity = buf_write_size(in);
+    /* compact the buffer so that we have the maximum space available */
+    if(!data_reader_compact(in)) { return data_reader_get_err(in); }
+
+    size_t capacity = data_reader_write_size(in);
+    if(capacity == DATA_READER_INVALID_SIZE) { return data_reader_get_err(in); }
     if(capacity == 0) { return UTIL_ERESOURCE; /* No space in buffer */ }
 
-    uint8_t *write_ptr = buf_write_ptr(in);
+    uint8_t *write_ptr = data_reader_write_ptr(in);
 
     struct sockaddr_storage sender_addr;
     socklen_t sender_addr_len = sizeof(sender_addr);
@@ -855,7 +611,7 @@ util_err_t socket_recvfrom_buf(socket_t sock, socket_address_t *from_addr, buf_t
     from_addr->addr_len = sender_addr_len;
 
     /* Advance write cursor by amount received */
-    buf_write_advance(in, (size_t)received);
+    data_reader_write_advance(in, (size_t)received);
 
-    return UTIL_OK;
+    return data_reader_get_err(in);
 }

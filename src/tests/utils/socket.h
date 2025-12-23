@@ -41,7 +41,8 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 #include "err.h"
-#include "buf.h"
+#include "data_reader.h"
+#include "packet_builder.h"
 
 /* Cross-platform socket type */
 #ifdef _WIN32
@@ -144,7 +145,7 @@ uint16_t socket_address_get_port(const socket_address_t *addr);
  *
  * @return socket_t - Created socket, or INVALID_SOCKET on failure.
  */
-socket_t socket_create_tcp(void);
+socket_t stream_socket_create(void);
 
 /**
  * @brief Create a UDP socket.
@@ -155,7 +156,7 @@ socket_t socket_create_tcp(void);
  *
  * @return socket_t - Created socket, or INVALID_SOCKET on failure.
  */
-socket_t socket_create_udp(void);
+socket_t dgram_socket_create(void);
 
 /**
  * @brief Create a TCP server socket.
@@ -165,7 +166,7 @@ socket_t socket_create_udp(void);
  * @param backlog - Maximum pending connections
  * @return socket_t - Created socket, or INVALID_SOCKET on failure.
  */
-socket_t socket_create_tcp_server(socket_address_t *address, int backlog);
+socket_t stream_listener_socket_create(socket_address_t *address, int backlog);
 
 /**
  * @brief Create a UDP server socket.
@@ -173,7 +174,7 @@ socket_t socket_create_tcp_server(socket_address_t *address, int backlog);
  * @param address - socket address to bind to (NULL for INADDR_ANY)
  * @return socket_t - Created socket, or INVALID_SOCKET on failure.
  */
-socket_t socket_create_udp_server(socket_address_t *address);
+socket_t dgram_listener_socket_create(socket_address_t *address);
 
 /**
  * @brief Close a socket.
@@ -233,7 +234,7 @@ util_err_t socket_set_broadcast(socket_t sock, bool broadcast);
  *               Can be NULL if not needed.
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t socket_accept(socket_t server, socket_t *out_client, socket_address_t *out_client_addr);
+util_err_t stream_accept_connection(socket_t server, socket_t *out_client, socket_address_t *out_client_addr);
 
 /**
  * @brief Connect a socket to a remote address.
@@ -242,7 +243,7 @@ util_err_t socket_accept(socket_t server, socket_t *out_client, socket_address_t
  * @param address - Remote address to connect to. Must not be NULL.
  * @return util_err_t - UTIL_OK if in progress or completed, error code on failure.
  */
-util_err_t socket_connect(socket_t sock, socket_address_t *address);
+util_err_t stream_connect(socket_t sock, socket_address_t *address);
 
 /**
  * @brief Send data on a socket.
@@ -251,26 +252,10 @@ util_err_t socket_connect(socket_t sock, socket_address_t *address);
  * the start index forward.  The end index is not modified.
  *
  * @param sock - Socket to send data on
- * @param out - Buffer containing the data to send
+ * @param out - Packet builder containing the data to send
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t socket_send_buf(socket_t sock, buf_t *out);
-
-/**
- * @brief Send data from multiple buffers using scatter/gather I/O.
- *
- * Internally uses writev/WSASend where available, falls back to sequential
- * send() otherwise. Each buffer's start index is advanced as bytes are consumed.
- *
- * On UTIL_EAGAIN, partial progress is already reflected in the buffers;
- * caller re-arms CAN_WRITE and retries with the same array.
- *
- * @param sock - Socket to send data on
- * @param segments - Array of buffer pointers
- * @param segment_count - Number of buffers in the array
- * @return util_err_t - UTIL_OK when all buffers drained, UTIL_EAGAIN on would-block, error otherwise
- */
-util_err_t socket_sendv_buf(socket_t sock, buf_t **segments, size_t segment_count);
+util_err_t stream_write(socket_t sock, packet_builder_t *out);
 
 /**
  * @brief Receive data on a socket.
@@ -286,7 +271,7 @@ util_err_t socket_sendv_buf(socket_t sock, buf_t **segments, size_t segment_coun
  * @param in - Buffer to store the received data
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t socket_recv_buf(socket_t sock, buf_t *in);
+util_err_t stream_read(socket_t sock, buf_t *in);
 
 
 /* Datagram helpers */
@@ -302,23 +287,7 @@ util_err_t socket_recv_buf(socket_t sock, buf_t *in);
  * @param out - Buffer containing the data to send
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t socket_sendto_buf(socket_t sock, socket_address_t *addr, buf_t *out);
-
-/**
- * @brief Send datagram data from multiple buffers using scatter/gather I/O.
- *
- * Internally uses sendmsg/WSASendTo where available, falls back to sequential
- * sendto() otherwise. Each buffer's start index is advanced as bytes are consumed.
- *
- * Note: For datagrams, either all data is sent or none is sent (atomic operation).
- *
- * @param sock - Socket to send data on
- * @param addr - Remote address to send to
- * @param segments - Array of buffer pointers
- * @param segment_count - Number of buffers in the array
- * @return util_err_t - UTIL_OK on success, UTIL_EAGAIN on would-block, error otherwise
- */
-util_err_t socket_sendtov_buf(socket_t sock, socket_address_t *addr, buf_t **segments, size_t segment_count);
+util_err_t dgram_send(socket_t sock, socket_address_t *addr, buf_t *out);
 
 /**
  * @brief Receive data on a socket.
@@ -333,7 +302,7 @@ util_err_t socket_sendtov_buf(socket_t sock, socket_address_t *addr, buf_t **seg
  * @param in - Buffer to store the received data
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t socket_recvfrom_buf(socket_t sock, socket_address_t *from_addr, buf_t *in);
+util_err_t dgram_receive(socket_t sock, socket_address_t *from_addr, buf_t *in);
 
 #ifdef __cplusplus
 }
