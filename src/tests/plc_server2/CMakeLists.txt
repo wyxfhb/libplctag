@@ -23,7 +23,8 @@ set(PLC_SERVER2_SOURCES
 
     # Shared test utilities (include directly)
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/args.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/buf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/data_reader.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../utils/packet_builder.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/err.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../utils/log_modules.def
