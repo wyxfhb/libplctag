@@ -12,7 +12,8 @@ set(SOURCES
     modbus_server.c
     register_storage.c
     modbus_protocol.c
-    ../utils/buf.c
+    ../utils/data_reader.c
+    ../utils/packet_builder.c
     ../utils/err.c
     ../utils/log.c
     ../utils/args.c
