@@ -1714,7 +1714,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         client->request_start_us = 0;
         
         /* Read until we get a complete EIP frame */
-        socket_read_yield(handle, &client->recv_buf, eip_frame_check, NULL,
+        stream_read_yield(handle, &client->recv_buf, eip_frame_check, NULL,
                          &client->request_start_us, NULL, err);
         
         if (err != UTIL_OK) {
@@ -1737,7 +1737,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         }
         
         /* Send response */
-        socket_write_yield(handle, &client->send_buf, err);
+        stream_write_yield(handle, &client->send_buf, err);
         
         if (err != UTIL_OK) {
             pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_WARN, "Client error during write: %s", 
@@ -1776,7 +1776,7 @@ static void listener_handler(coro_task_handle_t handle, socket_t fd, void *conte
     
     while (plc->running) {
         /* Accept new connection (yields on EAGAIN) */
-        socket_accept_yield(handle, &client_fd, &client_addr, err);
+        stream_listener_accept_yield(handle, &client_fd, &client_addr, err);
         
         if (err != UTIL_OK) {
             pdlog(LOG_MODULE_PLC_LISTENER, LOG_LEVEL_ERROR, "Accept failed: %s", 
