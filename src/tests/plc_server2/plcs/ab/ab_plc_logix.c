@@ -165,7 +165,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, "Waiting for EIP packet...");
 
         /* Read EIP frame from socket (will yield until data arrives) */
-        socket_read_yield(handle, &recv_buf, eip_frame_check, NULL, NULL, NULL, err);
+        stream_read_yield(handle, &recv_buf, eip_frame_check, NULL, NULL, NULL, err);
 
         if(err != UTIL_OK) {
             pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_WARN, "Client read failed: %s", util_err_str(err));
@@ -180,7 +180,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         if(err != UTIL_OK) { pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_DETAIL, "EIP dispatch returned: %s", util_err_str(err)); }
 
         /* Send response */
-        socket_write_yield(handle, &send_buf, err);
+        stream_write_yield(handle, &send_buf, err);
 
         if(err != UTIL_OK) {
             pdlog(LOG_MODULE_PLC_CLIENT, LOG_LEVEL_WARN, "Client write failed: %s", util_err_str(err));
@@ -215,7 +215,7 @@ static void listener_handler(coro_task_handle_t handle, socket_t fd, void *conte
 
     while(1) {
         /* Accept incoming connection */
-        socket_accept_yield(handle, &client_fd, &client_addr, err);
+        stream_listener_accept_yield(handle, &client_fd, &client_addr, err);
 
         if(err != UTIL_OK) {
             pdlog(LOG_MODULE_PLC_SERVER, LOG_LEVEL_INFO, "Accept stopped: %s", util_err_str(err));

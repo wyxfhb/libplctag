@@ -51,7 +51,7 @@ typedef struct client_context_s client_context_t;
  * ============================================================================ */
 
 /**
- * @brief Frame check callback for socket_read_yield
+ * @brief Frame check callback for stream_read_yield
  *
  * Checks if a complete EIP packet is available in the buffer.
  *
