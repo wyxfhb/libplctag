@@ -36,8 +36,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "buf.h"
+#include "data_reader.h"
 #include "err.h"
+#include "packet_builder.h"
 #include "register_storage.h"
 
 /* Modbus TCP Application Protocol (MBAP) Header */
@@ -84,11 +85,11 @@ typedef struct {
 
 /**
  * @brief Parse MBAP header from buffer
- * @param buf Buffer to read from (will advance read cursor)
+ * @param request Data reader to read from (will advance read cursor)
  * @param header OUT: Parsed MBAP header
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t modbus_parse_mbap_header(buf_t *buf, mbap_header_t *header);
+util_err_t modbus_parse_mbap_header(data_reader_t *request, mbap_header_t *header);
 
 /**
  * @brief Build MBAP header and response PDU header
@@ -97,7 +98,8 @@ util_err_t modbus_parse_mbap_header(buf_t *buf, mbap_header_t *header);
  * @param pdu_length Length of response PDU (not including MBAP)
  * @return UTIL_OK on success, error code on failure
  */
-util_err_t modbus_build_response_header(buf_t *response, const mbap_header_t *req_header, uint16_t pdu_length);
+util_err_t modbus_build_response_header(packet_builder_t *response, const mbap_header_t *req_header,
+                                        pb_segment_id_t payload_seg_id);
 
 /**
  * @brief Build Modbus exception response
@@ -106,7 +108,8 @@ util_err_t modbus_build_response_header(buf_t *response, const mbap_header_t *re
  * @param function_code Original function code
  * @param error Error code (will be mapped to Modbus exception)
  */
-void modbus_build_exception_response(buf_t *response, const mbap_header_t *req_header, uint8_t function_code, util_err_t error);
+void modbus_build_exception_response(packet_builder_t *response, const mbap_header_t *req_header, uint8_t function_code,
+                                     util_err_t error);
 
 /**
  * @brief Process a Modbus request and generate response
@@ -117,5 +120,5 @@ void modbus_build_exception_response(buf_t *response, const mbap_header_t *req_h
  * @param storage Register storage
  * @return UTIL_OK on success, error code otherwise
  */
-util_err_t modbus_process_request(uint8_t function_code, buf_t *request, buf_t *response, const mbap_header_t *req_header,
-                                  register_storage_t *storage);
+util_err_t modbus_process_request(uint8_t function_code, data_reader_t *request, packet_builder_t *response,
+                                  pb_segment_id_t payload_seg_id, const mbap_header_t *req_header, register_storage_t *storage);

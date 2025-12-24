@@ -55,7 +55,8 @@
 #include "socket.h"
 #include "log.h"
 #include "err.h"
-#include "buf.h"
+#include "data_reader.h"
+#include "packet_builder.h"
 #include "args.h"
 #include "utils.h"
 
@@ -146,8 +147,8 @@ struct modbus_client_s {
     server_ctx_t *server;
     uint8_t recv_buffer[MODBUS_RECV_BUFFER_SIZE];
     uint8_t send_buffer[MODBUS_SEND_BUFFER_SIZE];
-    buf_t recv_buf;
-    buf_t send_buf;
+    data_reader_t recv_buf;
+    packet_builder_t send_buf;
     mbap_header_t mbap_header;
     uint16_t expected_pdu_length;
     request_timing_t timing;
@@ -318,30 +319,35 @@ static void signal_handler(void) {
  * Client Coroutine Handler
  * ============================================================================ */
 
-static util_err_t modbus_frame_check(buf_t *buf, void *context) {
+static util_err_t modbus_frame_check(data_reader_t *buf, void *context) {
     (void)context; /* unused */
 
     pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Checking for complete Modbus frame");
     /* Check if we have enough data for the MBAP header */
-    if(buf_read_size(buf) < MBAP_HEADER_SIZE) {
+    if(data_reader_read_size(buf) < MBAP_HEADER_SIZE) {
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Not enough data for MBAP header");
         return UTIL_EAGAIN;
     }
 
     /* make local copy of buffer */
-    buf_t header_buf = *buf;
+    data_reader_t header_buf = *buf;
 
     /* Peek at the length field in the MBAP header */
+    uint16_t transaction_id = 0;
+    uint16_t protocol_id = 0;
     uint16_t length = 0;
-    buf_read_advance(&header_buf, 4); /* Skip Transaction ID and Protocol ID */
 
-    if(!buf_read_u16_be(&header_buf, "length", &length)) {
+    bool ok = data_reader_read_u16_be(&header_buf, "transaction_id", &transaction_id);
+    ok = ok && data_reader_read_u16_be(&header_buf, "protocol_id", &protocol_id);
+    ok = ok && data_reader_read_u16_be(&header_buf, "length", &length);
+
+    if(!ok) {
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Failed to read length field from MBAP header");
-        return buf_get_error(&header_buf);
+        return data_reader_get_err(&header_buf);
     }
 
     /* Total required size is MBAP header + length field - 1 for the unit byte */
-    if(buf_read_size(buf) < (MBAP_HEADER_SIZE + length - 1)) {
+    if(data_reader_read_size(buf) < (MBAP_HEADER_SIZE + length - 1)) {
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Not enough data for complete Modbus frame");
         return UTIL_EAGAIN;
     }
@@ -365,10 +371,10 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
 
     while(1) {
         /* compact the receive buffer */
-        buf_compact(&client->recv_buf);
+        data_reader_compact(&client->recv_buf);
 
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "%zu bytes space in receive buffer before read",
-              buf_write_size(&client->recv_buf));
+              data_reader_write_space(&client->recv_buf));
 
         /* Reset timestamps for new request */
         client->timing.first_byte_us = 0;
@@ -378,7 +384,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         client->timing.recv_start_us = util_time_us();
 
         /* Read until we get a full frame - macro will set first_byte_us and recv_complete_us */
-        socket_read_yield(handle, &client->recv_buf, modbus_frame_check, NULL, &client->timing.first_byte_us,
+        stream_read_yield(handle, &client->recv_buf, modbus_frame_check, NULL, &client->timing.first_byte_us,
                           &client->timing.recv_complete_us, err);
 
         /* Request processing start is when data actually arrived (not when we started blocking) */
@@ -392,7 +398,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         /* we got at least enough data for a full packet */
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL,
               "Received complete Modbus request of %zu bytes:", buf_read_size(&client->recv_buf));
-        pdlog_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->recv_buf);
+        pdlog_dr_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->recv_buf);
 
         /* get the header info */
         modbus_parse_mbap_header(&client->recv_buf, &client->mbap_header);
@@ -404,7 +410,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         /* FIXME - we should check the unit ID here. */
 
         /* Extract function code */
-        if(!buf_read_u8(&client->recv_buf, "function_code", &function_code)) {
+        if(!data_reader_read_u8(&client->recv_buf, "function_code", &function_code)) {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to read function code");
             break;
         }
@@ -414,31 +420,48 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         client->timing.process_start_us = util_time_us();
 
         /* Reset send buffer and generate response */
-        buf_reset(&client->send_buf);
+        if(!pb_reset(&client->send_buf)) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to reset send buffer %s",
+                  pb_get_err_str(&client->send_buf));
+            break;
+        }
+
+        /* Process request */
         err = modbus_process_request(function_code, &client->recv_buf, &client->send_buf, &client->mbap_header,
                                      client->server->storage);
 
         /* Capture process complete time */
         client->timing.process_complete_us = util_time_us();
 
-        if(err != UTIL_OK) {
-            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Request processing failed");
+        /* add the segments to the response */
+        pb_segment_id_t mbap_segment_id =
+            pb_add_segment(&client->send_buf, 7 /* MBAP is 6 plus the unit ID */); /* placeholder for header */
+        pb_segment_id_t payload_seg_id = pb_add_segment(&client->send_buf, MODBUS_MAX_PDU_SIZE);
+        if(pb_get_err(&client->send_buf) != UTIL_OK) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to add segments to response buffer %s",
+                  pb_get_err_str(&client->send_buf));
+            break;
+        }
+
+        if(err != UTIL_OK || mbap_segment_id == PB_INVALID_SEGMENT_ID || payload_seg_id == PB_INVALID_SEGMENT_ID) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Request processing failed %s", util_err_str(err));
 
             modbus_build_exception_response(&client->send_buf, &client->mbap_header, function_code, err);
         } else {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Request processed successfully");
         }
+        pb_compact(&client->send_buf);
 
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL,
-              "Prepared response of %zu bytes:", buf_read_size(&client->send_buf));
-        pdlog_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->send_buf);
+              "Prepared response of %zu bytes:", pb_get_total_len(&client->send_buf));
+        pdlog_pb_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->send_buf, 0);
 
         /* Capture send start time */
         client->timing.send_start_us = util_time_us();
 
         /* Send response */
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Sending response of %zu bytes", buf_write_pos(&client->send_buf));
-        socket_write_yield(handle, &client->send_buf, err);
+        stream_write_yield(handle, &client->send_buf, err);
         if(err != UTIL_OK) {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to send response: %s", util_err_str(err));
         }
@@ -496,6 +519,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
     CORO_END(handle);
 }
 
+
 /* ============================================================================
  * Listener Coroutine Handler
  * ============================================================================ */
@@ -515,7 +539,7 @@ static void listener_handler(coro_task_handle_t handle, socket_t fd, void *conte
 
     while(listener->server->running) {
         pdlog(LOG_MODULE_MODBUS_CORO_LISTENER, LOG_LEVEL_DETAIL, "Waiting for incoming connections...");
-        socket_accept_yield(handle, &client_fd, &client_addr, err);
+        stream_listener_accept_yield(handle, &client_fd, &client_addr, err);
         if(err != UTIL_OK) {
             pdlog(LOG_MODULE_MODBUS_CORO_LISTENER, LOG_LEVEL_ERROR, "Failed to accept connection");
             break;
@@ -535,8 +559,8 @@ static void listener_handler(coro_task_handle_t handle, socket_t fd, void *conte
             continue;
         }
 
-        client->recv_buf = buf_init(client->recv_buffer, MODBUS_RECV_BUFFER_SIZE);
-        client->send_buf = buf_init(client->send_buffer, MODBUS_SEND_BUFFER_SIZE);
+        client->recv_buf = data_reader_init(client->recv_buffer, MODBUS_RECV_BUFFER_SIZE);
+        client->send_buf = pb_init(client->send_buffer, MODBUS_SEND_BUFFER_SIZE);
         client->server = listener->server;
         client->expected_pdu_length = 0;
 
@@ -596,6 +620,58 @@ static void stats_dumper(coro_task_handle_t task, socket_t fd_ignored, void *con
     CORO_END(task);
 }
 
+
+/* ============================================================================
+ * Command Line Argument Definitions
+ * ============================================================================ */
+
+static args_flag_def_t flags[] = {
+    {.name = "listen",
+     .type = ARGS_TYPE_STRING,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_MULTIPLE,
+     .description = "Address and port to listen on (address:port)",
+     .default_value = {.has_default = false}},
+    {.name = "debug",
+     .type = ARGS_TYPE_STRING,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Debug level (ERROR, WARN, INFO, DETAIL, SPEW)",
+     .default_value = {.has_default = true, .value.string_val = "INFO"}},
+    {.name = "coils",
+     .type = ARGS_TYPE_INT,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Number of coils",
+     .default_value = {.has_default = true, .value.int_val = 1000}},
+    {.name = "discrete-inputs",
+     .type = ARGS_TYPE_INT,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Number of discrete inputs",
+     .default_value = {.has_default = true, .value.int_val = 1000}},
+    {.name = "holding-registers",
+     .type = ARGS_TYPE_INT,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Number of holding registers",
+     .default_value = {.has_default = true, .value.int_val = 1000}},
+    {.name = "input-registers",
+     .type = ARGS_TYPE_INT,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Number of input registers",
+     .default_value = {.has_default = true, .value.int_val = 1000}},
+    {.name = "help",
+     .type = ARGS_TYPE_BOOL,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Show this help message",
+     .default_value = {.has_default = true, .value.bool_val = false}},
+};
+static size_t num_flags = sizeof(flags) / sizeof(flags[0]);
+
+
 /* ============================================================================
  * Main Entry Point
  * ============================================================================ */
@@ -613,52 +689,6 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    args_flag_def_t flags[] = {
-        {.name = "listen",
-         .type = ARGS_TYPE_STRING,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_MULTIPLE,
-         .description = "Address and port to listen on (address:port)",
-         .default_value = {.has_default = false}},
-        {.name = "debug",
-         .type = ARGS_TYPE_STRING,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_ONCE,
-         .description = "Debug level (ERROR, WARN, INFO, DETAIL, SPEW)",
-         .default_value = {.has_default = true, .value.string_val = "INFO"}},
-        {.name = "coils",
-         .type = ARGS_TYPE_INT,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_ONCE,
-         .description = "Number of coils",
-         .default_value = {.has_default = true, .value.int_val = 1000}},
-        {.name = "discrete-inputs",
-         .type = ARGS_TYPE_INT,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_ONCE,
-         .description = "Number of discrete inputs",
-         .default_value = {.has_default = true, .value.int_val = 1000}},
-        {.name = "holding-registers",
-         .type = ARGS_TYPE_INT,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_ONCE,
-         .description = "Number of holding registers",
-         .default_value = {.has_default = true, .value.int_val = 1000}},
-        {.name = "input-registers",
-         .type = ARGS_TYPE_INT,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_ONCE,
-         .description = "Number of input registers",
-         .default_value = {.has_default = true, .value.int_val = 1000}},
-        {.name = "help",
-         .type = ARGS_TYPE_BOOL,
-         .required = ARGS_OPTIONAL,
-         .repeat = ARGS_ONCE,
-         .description = "Show this help message",
-         .default_value = {.has_default = true, .value.bool_val = false}},
-    };
-    size_t num_flags = sizeof(flags) / sizeof(flags[0]);
-
     util_err_t parse_rc = args_parse(argc, argv, flags, num_flags, &args_result);
     if(parse_rc != UTIL_OK) {
         pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_ERROR, "Failed to parse arguments: %s", args_get_error_detail(&args_result));
@@ -674,20 +704,27 @@ int main(int argc, char *argv[]) {
     }
 
     char *debug_level_str = args_get_string(&args_result, "debug");
-    log_level_t log_level = LOG_LEVEL_INFO;
+    log_level_t log_level = LOG_LEVEL_NONE;
     if(debug_level_str) {
-        if(strcmp(debug_level_str, "ERROR") == 0) {
+        if(strcasecmp(debug_level_str, "ERROR") == 0 || strcmp(debug_level_str, "1") == 0) {
             log_level = LOG_LEVEL_ERROR;
-        } else if(strcmp(debug_level_str, "WARN") == 0) {
+        } else if(strcasecmp(debug_level_str, "WARN") == 0 || strcmp(debug_level_str, "2") == 0) {
             log_level = LOG_LEVEL_WARN;
-        } else if(strcmp(debug_level_str, "INFO") == 0) {
+        } else if(strcasecmp(debug_level_str, "INFO") == 0 || strcmp(debug_level_str, "3") == 0) {
             log_level = LOG_LEVEL_INFO;
-        } else if(strcmp(debug_level_str, "DETAIL") == 0) {
+        } else if(strcasecmp(debug_level_str, "DETAIL") == 0 || strcmp(debug_level_str, "4") == 0) {
             log_level = LOG_LEVEL_DETAIL;
-        } else if(strcmp(debug_level_str, "SPEW") == 0) {
+        } else if(strcasecmp(debug_level_str, "SPEW") == 0 || strcmp(debug_level_str, "5") == 0) {
             log_level = LOG_LEVEL_SPEW;
+        } else if(strcasecmp(debug_level_str, "NONE") == 0 || strcmp(debug_level_str, "0") == 0) {
+            log_level = LOG_LEVEL_NONE;
+        } else {
+            pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_WARN, "Invalid debug level: %s", debug_level_str);
+            args_free(&args_result);
+            return EXIT_FAILURE;
         }
     }
+
     log_set_all_modules(log_level);
 
     server.start_time_us = util_time_us();
