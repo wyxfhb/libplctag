@@ -478,14 +478,16 @@ util_err_t stream_write(socket_t sock, packet_builder_t *out) {
 
     if(pb_get_err(out) != UTIL_OK) { return pb_get_err(out); }
 
-    /* compress the packet builder */
-    size_t to_send = pb_compact(out);
+    /* compact the packet builder if not already compacted */
+    if(!pb_is_compacted(out)) {
+        if(!pb_compact(out, PB_DEFAULT_COMPACTED_SEGMENT_ID)) { return pb_get_err(out); }
+    }
 
-    if(to_send == PB_INVALID_SEGMENT_SIZE) { return pb_get_err(out); }
+    size_t to_send = pb_unconsumed_size(out);
 
     if(to_send == 0) { return UTIL_OK; /* Nothing to send */ }
 
-    uint8_t *data = pb_get_base_ptr(out);
+    uint8_t *data = pb_unconsumed_ptr(out);
 
     if(data == NULL) {
         pb_set_err(out, UTIL_ENULL);
@@ -493,7 +495,7 @@ util_err_t stream_write(socket_t sock, packet_builder_t *out) {
     }
 
     pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, "Attempting to send %zu bytes", to_send);
-    pdlog_bytes(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, out);
+    pdlog_pb_bytes(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, out, PB_DEFAULT_COMPACTED_SEGMENT_ID);
 
 #ifdef _WIN32
     int sent = send(sock, (const char *)data, (int)to_send, 0);
@@ -510,10 +512,9 @@ util_err_t stream_write(socket_t sock, packet_builder_t *out) {
     pdlog(LOG_MODULE_SOCKET, LOG_LEVEL_SPEW, "Successfully sent %zd bytes out of %zu", sent, to_send);
 
     /* Advance read cursor by amount actually sent */
-    /* FIXME - what to do here? */
     if(!pb_consume_compacted(out, (size_t)sent)) { return pb_get_err(out); }
 
-    return (pb_get_total_len(out) > 0) ? UTIL_EAGAIN : UTIL_OK;
+    return (pb_unconsumed_size(out) > 0) ? UTIL_EAGAIN : UTIL_OK;
 }
 
 
@@ -556,13 +557,21 @@ util_err_t dgram_send(socket_t sock, socket_address_t *addr, packet_builder_t *o
 
     if(pb_get_err(out) != UTIL_OK) { return pb_get_err(out); }
 
-    size_t to_send = pb_compact(out);
+    /* compact the packet builder if not already compacted */
+    if(!pb_is_compacted(out)) {
+        if(!pb_compact(out, PB_DEFAULT_COMPACTED_SEGMENT_ID)) { return pb_get_err(out); }
+    }
 
-    if(to_send == PB_INVALID_SEGMENT_SIZE) { return pb_get_err(out); }
+    size_t to_send = pb_get_total_len(out);
 
     if(to_send == 0) { return UTIL_OK; /* Nothing to send */ }
 
     const uint8_t *data = pb_get_base_ptr(out);
+
+    if(data == NULL) {
+        pb_set_err(out, UTIL_ENULL);
+        return UTIL_ENULL;
+    }
 
 #ifdef _WIN32
     int sent = sendto(sock, (const char *)data, (int)to_send, 0, (struct sockaddr *)&addr->addr, addr->addr_len);
@@ -573,11 +582,8 @@ util_err_t dgram_send(socket_t sock, socket_address_t *addr, packet_builder_t *o
     if(sent < 0) { return util_err_from_errno(errno); }
 #endif
 
-    /* Advance read cursor by amount actually sent */
-    pb_consume_compacted(out, (size_t)sent);
-
-    /* FIXME - is this the right logic here?  We might not want to send more if we sent a partial packet for UDP? */
-    return (pb_get_total_len(out) > 0) ? UTIL_EAGAIN : UTIL_OK;
+    /* Datagram sends are atomic - either all data is sent or none is */
+    return UTIL_OK;
 }
 
 

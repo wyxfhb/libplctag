@@ -85,6 +85,14 @@ uint8_t *pb_get_base_ptr(packet_builder_t *b) {
     return b->base;
 }
 
+uint8_t *pb_unconsumed_ptr(packet_builder_t *b) {
+    if(!b) { return NULL; }
+
+    if(!b->compacted) { return NULL; }
+
+    return b->base + b->limits[0].len;
+}
+
 size_t pb_get_total_len(packet_builder_t *b) {
     if(!b) { return PB_INVALID_SEGMENT_SIZE; }
 
@@ -94,6 +102,14 @@ size_t pb_get_total_len(packet_builder_t *b) {
     }
 
     return total;
+}
+
+size_t pb_unconsumed_size(packet_builder_t *b) {
+    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+
+    if(!b->compacted) { return PB_INVALID_SEGMENT_SIZE; }
+
+    return b->limits[0].limit - b->limits[0].len;
 }
 
 
@@ -166,6 +182,14 @@ bool pb_is_compacted(packet_builder_t *b) {
     if(!b) { return false; }
 
     return b->compacted;
+}
+
+pb_segment_id_t pb_get_compacted_segment_id(packet_builder_t *b) {
+    if(!b) { return PB_INVALID_SEGMENT_ID; }
+
+    if(!b->compacted) { return PB_INVALID_SEGMENT_ID; }
+
+    return b->segment_ids[0];
 }
 
 bool pb_set_default_seg_id(packet_builder_t *b, pb_segment_id_t seg_id) {

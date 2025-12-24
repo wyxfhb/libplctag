@@ -46,7 +46,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <errno.h>
-#include "buf.h"
+#include "data_reader.h"
+#include "packet_builder.h"
 #include "log.h"
 #include "socket.h"
 
@@ -230,9 +231,9 @@ socket_t coro_get_fd(coro_task_handle_t task);
  * Usage:
  *   socket_t client_fd;
  *   socket_address_t client_addr;
- *   socket_accept_yield(task, &client_fd, &client_addr, err);
+ *   stream_listener_accept_yield(task, &client_fd, &client_addr, err);
  */
-#define socket_accept_yield(task, client_fd_ptr, client_addr, err)                                                      \
+#define stream_listener_accept_yield(task, client_fd_ptr, client_addr, err)                                             \
     do {                                                                                                                \
         socket_t __listen_fd;                                                                                           \
         util_err_t __err;                                                                                               \
@@ -254,9 +255,9 @@ socket_t coro_get_fd(coro_task_handle_t task);
  * Connect with automatic retry on EAGAIN
  * Usage:
  *   socket_address_t addr;
- *   socket_connect_yield(task, &addr, err);
+ *   stream_connect_yield(task, &addr, err);
  */
-#define socket_connect_yield(task, address, err)                                        \
+#define stream_connect_yield(task, address, err)                                        \
     do {                                                                                \
         socket_t __fd;                                                                  \
         util_err_t __err;                                                               \
@@ -275,12 +276,12 @@ socket_t coro_get_fd(coro_task_handle_t task);
  * Read with automatic retry until frame complete
  * Usage:
  *   int64_t first_byte_ts = 0, complete_ts = 0;
- *   socket_read_yield(task, &buf, frame_check_func, ctx, &first_byte_ts, &complete_ts, err);
+ *   stream_read_yield(task, &buf, frame_check_func, ctx, &first_byte_ts, &complete_ts, err);
  *
  * @param first_byte_ts_ptr Optional pointer to timestamp (int64_t*) - set when first data arrives (can be NULL)
  * @param complete_ts_ptr Optional pointer to timestamp (int64_t*) - set when frame complete (can be NULL)
  */
-#define socket_read_yield(task, buf, frame_func, ctx, first_byte_ts_ptr_arg, complete_ts_ptr_arg, err)                          \
+#define stream_read_yield(task, buf, frame_func, ctx, first_byte_ts_ptr_arg, complete_ts_ptr_arg, err)                          \
     do {                                                                                                                        \
         socket_t __fd;                                                                                                          \
         util_err_t __err;                                                                                                       \
@@ -290,7 +291,7 @@ socket_t coro_get_fd(coro_task_handle_t task);
             if(__err == UTIL_OK) {                                                                                              \
                 int64_t *__first_byte_ts_ptr = (first_byte_ts_ptr_arg);                                                         \
                 int64_t *__complete_ts_ptr = (complete_ts_ptr_arg);                                                             \
-                pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_SPEW, "Read %zu bytes from fd=%d", buf_read_size(buf), (int)__fd);         \
+                pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_SPEW, "Read %zu bytes from fd=%d", data_reader_read_size(buf), (int)__fd); \
                 /* Capture first byte timestamp if requested and not already set */                                             \
                 if((__first_byte_ts_ptr != NULL) && (*(__first_byte_ts_ptr) == 0)) { *(__first_byte_ts_ptr) = util_time_us(); } \
                 __err = (frame_func)((buf), (ctx));                                                                             \
@@ -308,9 +309,9 @@ socket_t coro_get_fd(coro_task_handle_t task);
  * Receive datagram with automatic retry on EAGAIN
  * Usage:
  *   socket_address_t from_addr;
- *   socket_recvfrom_yield(task, &buf, &from_addr, err);
+ *   dgram_receive_yield(task, &buf, &from_addr, err);
  */
-#define socket_recvfrom_yield(task, buf, from_addr, err)                                \
+#define dgram_receive_yield(task, buf, from_addr, err)                                  \
     do {                                                                                \
         socket_t __fd;                                                                  \
         util_err_t __err;                                                               \
@@ -329,9 +330,9 @@ socket_t coro_get_fd(coro_task_handle_t task);
  * Send datagram with automatic retry on EAGAIN
  * Usage:
  *   socket_address_t to_addr;
- *   socket_sendto_yield(task, &buf, &to_addr, err);
+ *   dgram_send_yield(task, &buf, &to_addr, err);
  */
-#define socket_sendto_yield(task, buf, to_addr, err)                                    \
+#define dgram_send_yield(task, buf, to_addr, err)                                       \
     do {                                                                                \
         socket_t __fd;                                                                  \
         util_err_t __err;                                                               \
@@ -349,14 +350,14 @@ socket_t coro_get_fd(coro_task_handle_t task);
 /**
  * Write with automatic retry on EAGAIN
  * Usage:
- *   socket_write_yield(task, &buf, err);
+ *   stream_write_yield(task, &buf, err);
  */
-#define socket_write_yield(task, buf, err)                                              \
+#define stream_write_yield(task, buf, err)                                              \
     do {                                                                                \
         socket_t __fd;                                                                  \
         util_err_t __err;                                                               \
         __err = UTIL_OK;                                                                \
-        while(buf_read_size((buf)) > 0) {                                               \
+        while(pb_unconsumed_size((buf)) > 0) {                                          \
             __fd = coro_get_fd(task);                                                   \
             __err = stream_write(__fd, (buf));                                          \
             if(__err == UTIL_EAGAIN) {                                                  \

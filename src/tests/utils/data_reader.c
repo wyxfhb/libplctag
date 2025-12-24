@@ -51,13 +51,24 @@ bool data_reader_reset(data_reader_t *r) {
 }
 
 
-int data_reader_get_err(const data_reader_t *r) { return r ? r->err : UTIL_ENULL; }
+util_err_t data_reader_get_err(const data_reader_t *r) { return r ? r->err : UTIL_ENULL; }
 
-bool data_reader_set_err(data_reader_t *r, int err) {
+bool data_reader_set_err(data_reader_t *r, util_err_t err) {
     if(!r) { return false; }
 
     r->err = err;
 
+    return true;
+}
+
+const char *data_reader_get_err_field(const data_reader_t *r) {
+    if(!r) { return "--NO FIELD--"; }
+    return r->err_field;
+}
+
+bool data_reader_set_err_field(data_reader_t *r, const char *field_name) {
+    if(!r) { return false; }
+    r->err_field = field_name;
     return true;
 }
 
@@ -106,10 +117,11 @@ bool data_reader_compact(data_reader_t *r) {
     return true;
 }
 
-bool data_reader_read_u8(data_reader_t *r, uint8_t *val) {
+bool data_reader_read_u8(data_reader_t *r, const char *field_name, uint8_t *val) {
     if(!r) { return false; }
     if(!val) {
         data_reader_set_err(r, UTIL_ENULL);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -118,6 +130,7 @@ bool data_reader_read_u8(data_reader_t *r, uint8_t *val) {
 
     if(r->read_pos + 1 > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -126,7 +139,7 @@ bool data_reader_read_u8(data_reader_t *r, uint8_t *val) {
     return true;
 }
 
-bool data_reader_read_u16_le(data_reader_t *r, uint16_t *val) {
+bool data_reader_read_u16_le(data_reader_t *r, const char *field_name, uint16_t *val) {
     size_t read_size = sizeof(uint16_t);
 
     if(!r) { return false; }
@@ -135,6 +148,7 @@ bool data_reader_read_u16_le(data_reader_t *r, uint16_t *val) {
 
     if(r->read_pos + read_size > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -146,7 +160,7 @@ bool data_reader_read_u16_le(data_reader_t *r, uint16_t *val) {
     return true;
 }
 
-bool data_reader_read_u32_le(data_reader_t *r, uint32_t *val) {
+bool data_reader_read_u32_le(data_reader_t *r, const char *field_name, uint32_t *val) {
     size_t read_size = sizeof(uint32_t);
 
     if(!r) { return false; }
@@ -155,6 +169,7 @@ bool data_reader_read_u32_le(data_reader_t *r, uint32_t *val) {
 
     if(r->read_pos + read_size > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -166,7 +181,7 @@ bool data_reader_read_u32_le(data_reader_t *r, uint32_t *val) {
     return true;
 }
 
-bool data_reader_read_u64_le(data_reader_t *r, uint64_t *val) {
+bool data_reader_read_u64_le(data_reader_t *r, const char *field_name, uint64_t *val) {
     size_t read_size = sizeof(uint64_t);
 
     if(!r) { return false; }
@@ -175,6 +190,7 @@ bool data_reader_read_u64_le(data_reader_t *r, uint64_t *val) {
 
     if(r->read_pos + read_size > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -187,7 +203,7 @@ bool data_reader_read_u64_le(data_reader_t *r, uint64_t *val) {
     return true;
 }
 
-bool data_reader_read_u16_be(data_reader_t *r, uint16_t *val) {
+bool data_reader_read_u16_be(data_reader_t *r, const char *field_name, uint16_t *val) {
     size_t read_size = sizeof(uint16_t);
 
     if(!r) { return false; }
@@ -196,6 +212,7 @@ bool data_reader_read_u16_be(data_reader_t *r, uint16_t *val) {
 
     if(r->read_pos + read_size > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -207,7 +224,7 @@ bool data_reader_read_u16_be(data_reader_t *r, uint16_t *val) {
     return true;
 }
 
-bool data_reader_read_u32_be(data_reader_t *r, uint32_t *val) {
+bool data_reader_read_u32_be(data_reader_t *r, const char *field_name, uint32_t *val) {
     size_t read_size = sizeof(uint32_t);
 
     if(!r) { return false; }
@@ -216,6 +233,7 @@ bool data_reader_read_u32_be(data_reader_t *r, uint32_t *val) {
 
     if(r->read_pos + read_size > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -227,7 +245,7 @@ bool data_reader_read_u32_be(data_reader_t *r, uint32_t *val) {
     return true;
 }
 
-bool data_reader_read_u64_be(data_reader_t *r, uint64_t *val) {
+bool data_reader_read_u64_be(data_reader_t *r, const char *field_name, uint64_t *val) {
     size_t read_size = sizeof(uint64_t);
 
     if(!r) { return false; }
@@ -236,6 +254,7 @@ bool data_reader_read_u64_be(data_reader_t *r, uint64_t *val) {
 
     if(r->read_pos + read_size > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
 
@@ -248,14 +267,59 @@ bool data_reader_read_u64_be(data_reader_t *r, uint64_t *val) {
     return true;
 }
 
-bool data_reader_read_bytes(data_reader_t *r, uint8_t *out, size_t len) {
+bool data_reader_read_bytes(data_reader_t *r, const char *field_name, uint8_t *out, size_t len) {
     if(!r) { return false; }
     if(r->err) { return false; }
     if(r->read_pos + len > r->write_pos) {
         data_reader_set_err(r, UTIL_EBOUNDS);
+        data_reader_set_err_field(r, field_name);
         return false;
     }
     memcpy(out, r->base + r->read_pos, len);
     r->read_pos += len;
     return true;
+}
+
+
+#define COLUMNS (16)
+
+/**
+ * @brief Log a buffer's remaining contents as hex.
+ *
+ * @param func name of the function in which the log is generated
+ * @param line_num line number in the source file
+ * @param lvl log level
+ * @param modules bitmask of modules this log applies to
+ * @param buf data reader containing the bytes to log
+ */
+void log_dr_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, data_reader_t *buf) {
+    if(!buf) {
+        log_impl(func, line_num, lvl, modules, "<null>");
+        return;
+    }
+
+    size_t data_len = buf->write_pos - buf->read_pos;
+    const uint8_t *data = buf->base + buf->read_pos;
+
+    if(!data || data_len == 0) {
+        log_impl(func, line_num, lvl, modules, "<empty>");
+        return;
+    }
+
+    size_t total_rows = (data_len + (COLUMNS - 1)) / COLUMNS;
+    for(size_t row = 0; row < total_rows; ++row) {
+        char row_buf[(COLUMNS * 3) + 6] = {0};
+        char *p = row_buf;
+
+        p += sprintf(p, "%04zx:", row * COLUMNS);
+
+        size_t start = row * COLUMNS;
+        size_t end = start + COLUMNS;
+
+        if(end > data_len) { end = data_len; }
+
+        for(size_t i = start; i < end; ++i) { p += sprintf(p, " %02x", (unsigned)data[i]); }
+
+        log_impl(func, line_num, lvl, modules, "%s", row_buf);
+    }
 }

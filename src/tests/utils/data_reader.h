@@ -37,6 +37,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "log.h"
 
 /*
  * Data Reader API (Linear)
@@ -50,6 +51,7 @@ typedef struct data_reader_s {
     size_t capacity;
     size_t read_pos;
     size_t write_pos;
+    const char *err_field;
     int err;
 } data_reader_t;
 
@@ -58,9 +60,11 @@ data_reader_t data_reader_init(uint8_t *base, size_t capacity);
 bool data_reader_reset(data_reader_t *r);
 
 /* state and errors */
-bool data_reader_ok(const data_reader_t *r);
-int data_reader_get_err(data_reader_t *r);
-bool data_reader_set_err(data_reader_t *r, int err);
+util_err_t data_reader_get_err(data_reader_t *r);
+bool data_reader_set_err(data_reader_t *r, util_err_t err);
+
+const char *data_reader_get_err_field(const data_reader_t *r);
+bool data_reader_set_err_field(data_reader_t *r, const char *field_name);
 
 /* write operations for filling the buffer */
 size_t data_reader_write_space(const data_reader_t *r);
@@ -72,14 +76,41 @@ size_t data_reader_read_size(const data_reader_t *r);
 bool data_reader_compact(data_reader_t *r);
 
 /* data accessors*/
-bool data_reader_read_u8(data_reader_t *r, uint8_t *val);
+bool data_reader_read_u8(data_reader_t *r, const char *field_name, uint8_t *val);
 
-bool data_reader_read_u16_le(data_reader_t *r, uint16_t *val);
-bool data_reader_read_u32_le(data_reader_t *r, uint32_t *val);
-bool data_reader_read_u64_le(data_reader_t *r, uint64_t *val);
+bool data_reader_read_u16_le(data_reader_t *r, const char *field_name, uint16_t *val);
+bool data_reader_read_u32_le(data_reader_t *r, const char *field_name, uint32_t *val);
+bool data_reader_read_u64_le(data_reader_t *r, const char *field_name, uint64_t *val);
 
-bool data_reader_read_u16_be(data_reader_t *r, uint16_t *val);
-bool data_reader_read_u32_be(data_reader_t *r, uint32_t *val);
-bool data_reader_read_u64_be(data_reader_t *r, uint64_t *val);
+bool data_reader_read_u16_be(data_reader_t *r, const char *field_name, uint16_t *val);
+bool data_reader_read_u32_be(data_reader_t *r, const char *field_name, uint32_t *val);
+bool data_reader_read_u64_be(data_reader_t *r, const char *field_name, uint64_t *val);
 
-bool data_reader_read_bytes(data_reader_t *r, uint8_t *out, size_t len);
+bool data_reader_read_bytes(data_reader_t *r, const char *field_name, uint8_t *out, size_t len);
+
+
+/* Logging */
+
+/**
+ * @brief Dump bytes from a data reader to the log (internal).
+ *
+ * @param func
+ * @param line_num
+ * @param lvl
+ * @param modules
+ * @param dr
+ */
+void log_dr_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, data_reader_t *dr);
+/* Logging macros */
+
+/**
+ * @brief Log data reader buffer contents if enabled for the given modules and level.
+ *
+ * @param modules Bitmask of modules this log applies to
+ * @param level Log level
+ * @param buf Buffer to dump
+ */
+#define pdlog_dr_bytes(modules, level, buf)                                                           \
+    do {                                                                                              \
+        if(log_is_enabled(modules, level)) log_bytes_impl(__func__, __LINE__, level, modules, (buf)); \
+    } while(0)

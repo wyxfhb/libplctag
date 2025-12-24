@@ -42,6 +42,7 @@
 
 #define PB_MAX_SEGMENTS 8
 #define PB_INVALID_SEGMENT_ID 0xFF
+#define PB_DEFAULT_COMPACTED_SEGMENT_ID 0xFE
 #define PB_INVALID_SEGMENT_SIZE SIZE_MAX
 
 /*
@@ -125,6 +126,21 @@ bool pb_reset(packet_builder_t *b);
 uint8_t *pb_get_base_ptr(packet_builder_t *b);
 
 /**
+ * @brief Get pointer to unconsumed (unsent) data in a compacted packet
+ *
+ * For a compacted packet builder, returns a pointer to the start of the unconsumed data
+ * (base + len of the compacted segment).
+ *
+ * Returns NULL if:
+ * - b is NULL
+ * - the packet builder is not compacted
+ *
+ * @param b
+ * @return uint8_t* - Pointer to unconsumed data, or NULL if not compacted
+ */
+uint8_t *pb_unconsumed_ptr(packet_builder_t *b);
+
+/**
  * @brief Get total length of packet data
  *
  * This will return the total length of all segments.
@@ -135,6 +151,21 @@ uint8_t *pb_get_base_ptr(packet_builder_t *b);
  * @return size_t
  */
 size_t pb_get_total_len(packet_builder_t *b);
+
+/**
+ * @brief Get amount of unconsumed (unsent) data in a compacted packet
+ *
+ * For a compacted packet builder, returns the amount of data that has not yet been sent
+ * (limit - len of the compacted segment).
+ *
+ * Returns PB_INVALID_SEGMENT_SIZE if:
+ * - b is NULL
+ * - the packet builder is not compacted
+ *
+ * @param b
+ * @return size_t - Amount of unconsumed data, or PB_INVALID_SEGMENT_SIZE if not compacted
+ */
+size_t pb_unconsumed_size(packet_builder_t *b);
 
 
 /**
@@ -172,6 +203,17 @@ bool pb_compact(packet_builder_t *b, pb_segment_id_t packet_seg_id);
  * @return false
  */
 bool pb_is_compacted(packet_builder_t *b);
+
+/**
+ * @brief Get the segment ID of the compacted segment
+ *
+ * Returns the segment ID of the compacted segment if the packet builder is compacted.
+ * Returns PB_INVALID_SEGMENT_ID if b is NULL or not compacted.
+ *
+ * @param b
+ * @return pb_segment_id_t - Segment ID of compacted segment, or PB_INVALID_SEGMENT_ID
+ */
+pb_segment_id_t pb_get_compacted_segment_id(packet_builder_t *b);
 
 /**
  * @brief consume bytes from the compacted segment
