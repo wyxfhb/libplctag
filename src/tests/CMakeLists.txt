@@ -19,12 +19,12 @@ add_subdirectory("modbus_server")
 
 # Build the PLC Server (EtherNet/IP simulator)
 # Greenfield implementation using event-driven coroutine architecture
-message("Building EtherNet/IP PLC server.")
-add_subdirectory("plc_server")
+# message("Building EtherNet/IP PLC server.")
+# add_subdirectory("plc_server")
 
 # Build the PLC Server 2 (EtherNet/IP simulator - Refactored)
 # Modular protocol architecture with generic registries
-message("Building refactored EtherNet/IP PLC server (plc_server2).")
-add_subdirectory("plc_server2")
+# message("Building refactored EtherNet/IP PLC server (plc_server2).")
+# add_subdirectory("plc_server2")
 
 
