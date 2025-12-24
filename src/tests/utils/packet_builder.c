@@ -39,10 +39,107 @@
 #define BYTE_MASK 0xFF
 
 packet_builder_t pb_init(uint8_t *mem, size_t capacity) {
-    packet_builder_t b = {.base = mem, .capacity = capacity, .num_segments = 0, .compacted = false, .err = 0};
+    packet_builder_t b = {
+        .base = mem,
+        .capacity = capacity,
+        .num_segments = 0,
+        .compacted = false,
+        .err = 0,
+        .default_write_seg_id = PB_INVALID_SEGMENT_ID,
+        .err_field = NULL
+    };
+    /* Initialize all segment IDs to invalid */
+    for(int i = 0; i < PB_MAX_SEGMENTS; i++) {
+        b.segment_ids[i] = PB_INVALID_SEGMENT_ID;
+        b.limits[i].limit = 0;
+        b.limits[i].len = 0;
+    }
     return b;
 }
 
+
+bool pb_reset(packet_builder_t *b) {
+    if(!b) { return false; }
+
+    b->num_segments = 0;
+    b->compacted = false;
+    b->err = 0;
+    b->err_field = NULL;
+    b->default_write_seg_id = PB_INVALID_SEGMENT_ID;
+
+    /* Initialize all segment IDs and limits to invalid/zero */
+    for(int i = 0; i < PB_MAX_SEGMENTS; i++) {
+        b->segment_ids[i] = PB_INVALID_SEGMENT_ID;
+        b->limits[i].limit = 0;
+        b->limits[i].len = 0;
+    }
+
+    return true;
+}
+
+uint8_t *pb_get_base_ptr(packet_builder_t *b) {
+    if(!b) { return NULL; }
+
+    if(!b->compacted) { return NULL; }
+
+    return b->base;
+}
+
+size_t pb_get_total_len(packet_builder_t *b) {
+    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+
+    size_t total = 0;
+    for(uint8_t i = 0; i < b->num_segments; i++) {
+        total += b->limits[i].len;
+    }
+
+    return total;
+}
+
+
+size_t pb_compact(packet_builder_t *b, pb_segment_id_t packet_seg_id) {
+    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+
+    if(b->err) { return PB_INVALID_SEGMENT_SIZE; }
+
+    if(b->compacted) {
+        /* already compacted - check if trying to use different segment ID */
+        if(b->segment_ids[0] != packet_seg_id) {
+            b->err = UTIL_EDUPLICATE;
+            return PB_INVALID_SEGMENT_SIZE;
+        }
+        return pb_get_total_len(b);
+    }
+
+    size_t dest_offset = 0;
+    size_t src_offset = 0;
+
+    for(uint8_t i = 0; i < b->num_segments; i++) {
+        size_t limit = b->limits[i].limit;
+        size_t len = b->limits[i].len;
+
+        /* Move data to the front (memmove handles overlapping regions safely) */
+        if(len > 0 && src_offset != dest_offset) { memmove(b->base + dest_offset, b->base + src_offset, len); }
+        dest_offset += len;
+        src_offset += limit;
+
+        /* zero out existing segments*/
+        b->limits[i].limit = 0;
+        b->limits[i].len = 0;
+    }
+
+    /* create a single segment with all the data. */
+    if(b->num_segments > 0) {
+        b->limits[0].limit = dest_offset;
+        b->limits[0].len = dest_offset;
+        b->segment_ids[0] = packet_seg_id;
+        b->num_segments = 1;
+    }
+
+    b->compacted = true;
+
+    return dest_offset;
+}
 
 bool pb_consume_compacted(packet_builder_t *b, size_t size) {
     if(!b) { return false; }
@@ -55,296 +152,369 @@ bool pb_consume_compacted(packet_builder_t *b, size_t size) {
         return false;
     }
 
-    if(size > b->segments[0].limit - b->segments[0].len) {
+    if(size > b->limits[0].limit - b->limits[0].len) {
         b->err = UTIL_EBOUNDS;
         return false;
     }
 
-    b->segments[0].len += size;
+    b->limits[0].len += size;
 
     return true;
+}
 
-    uint8_t *pb_get_base_ptr(packet_builder_t * b) {
-        if(!b) { return NULL; }
+bool pb_is_compacted(packet_builder_t *b) {
+    if(!b) { return false; }
 
-        /* return the base pointer depending on whether the packet is compacted */
-        return (b->compacted ? b->base + b->segments[0].len : b->base);
+    return b->compacted;
+}
+
+bool pb_set_default_seg_id(packet_builder_t *b, pb_segment_id_t seg_id) {
+    if(!b) { return false; }
+
+    if(b->err) { return false; }
+
+    if(seg_id >= b->num_segments) {
+        b->err = UTIL_ENOTFOUND;
+        return false;
     }
 
-    size_t pb_get_total_len(packet_builder_t * b) {
-        if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+    b->default_write_seg_id = seg_id;
 
-        size_t total = 0;
-        for(uint8_t i = 0; i < b->num_segments; i++) {
-            total += (b->compacted ? b->segments[i].limit - b->segments[i].len : b->segments[i].len);
-        }
+    return true;
+}
 
-        return total;
+bool pb_add_segment(packet_builder_t *b, pb_segment_id_t new_seg_id, size_t max_size) {
+    if(!b) { return false; }
+
+    if(b->err) { return false; }
+
+    if(b->compacted) {
+        b->err = UTIL_EINVAL;
+        return false;
     }
 
-
-    size_t pb_compact(packet_builder_t * b) {
-        if(b->err) { return 0; }
-
-        size_t dest_offset = 0;
-        size_t src_offset = 0;
-
-        if(b->compacted) {
-            /* already compacted */
-            return pb_get_total_len(b);
-        }
-
-        for(uint8_t i = 0; i < b->num_segments; i++) {
-            size_t limit = b->segments[i].limit;
-            size_t len = b->segments[i].len;
-
-            /* Move data to the front (memmove handles overlapping regions safely) */
-            if(len > 0 && src_offset != dest_offset) { memmove(b->base + dest_offset, b->base + src_offset, len); }
-            dest_offset += len;
-            src_offset += limit;
-
-            /* zero out existing segments*/
-            b->segments[i].limit = 0;
-            b->segments[i].len = 0;
-        }
-
-        /* create a single segment with all the data. */
-        if(b->num_segments > 0) {
-            b->segments[0].limit = dest_offset;
-            b->segments[0].len = dest_offset;
-            b->num_segments = 1;
-        }
-
-        b->compacted = true;
-
-        return dest_offset;
+    if(b->num_segments >= PB_MAX_SEGMENTS) {
+        b->err = UTIL_ERESOURCE;
+        return false;
     }
 
-    bool pb_consume_compacted(packet_builder_t * b, size_t size) {
-        if(!b) { return false; }
-
-        if(b->err) { return false; }
-
-        /* we can only do this on compacted packet builders */
-        if(!b->compacted) {
-            b->err = UTIL_EINVAL;
+    /* Check if segment ID is already in use */
+    for(uint8_t i = 0; i < b->num_segments; i++) {
+        if(b->segment_ids[i] == new_seg_id) {
+            b->err = UTIL_EDUPLICATE;
             return false;
         }
+    }
 
-        if(size > b->segments[0].limit - b->segments[0].len) {
-            b->err = UTIL_EBOUNDS;
-            return false;
+    /* Scan existing segments to check if we have room */
+    size_t used = 0;
+    for(uint8_t i = 0; i < b->num_segments; i++) { used += b->limits[i].limit; }
+
+    if(used + max_size > b->capacity) {
+        b->err = UTIL_EBOUNDS;
+        return false;
+    }
+
+    uint8_t id = b->num_segments++;
+    b->segment_ids[id] = new_seg_id;
+    b->limits[id].limit = max_size;
+    b->limits[id].len = 0;
+
+    return true;
+}
+
+size_t pb_segment_len(packet_builder_t *b, pb_segment_id_t seg_id) {
+    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+
+    pb_segment_id_t seg_index = find_segment_index(b, seg_id);
+    if(seg_index == PB_INVALID_SEGMENT_ID) {
+        b->err = UTIL_ENOTFOUND;
+        return PB_INVALID_SEGMENT_SIZE;
+    }
+
+    /* For compacted: return remaining data (limit - len) */
+    /* For non-compacted: return data written (len) */
+    if(b->compacted) {
+        return b->limits[seg_index].limit - b->limits[seg_index].len;
+    } else {
+        return b->limits[seg_index].len;
+    }
+}
+
+
+util_err_t pb_get_err(packet_builder_t *b) {
+    if(!b) { return UTIL_EINVAL; }
+
+    return b->err;
+}
+
+bool pb_set_err(packet_builder_t *b, int err) {
+    if(!b) { return false; }
+
+    b->err = err;
+
+    return true;
+}
+
+
+const char *pb_get_err_field(packet_builder_t *b) {
+    if(!b) { return "--NO FIELD--"; }
+    return b->err_field;
+}
+
+bool pb_set_err_field(packet_builder_t *b, const char *field_name) {
+    if(!b) { return false; }
+    b->err_field = field_name;
+    return true;
+}
+
+/* Internal helper to find segment index by ID (linear search through segment_ids array) */
+static pb_segment_id_t find_segment_index(packet_builder_t *b, pb_segment_id_t seg_id) {
+    if(!b) { return PB_INVALID_SEGMENT_ID; }
+
+    for(uint8_t i = 0; i < b->num_segments; i++) {
+        if(b->segment_ids[i] == seg_id) {
+            return i;
         }
-
-        b->segments[0].len += size;
-
-        return true;
     }
 
-    pb_segment_id_t pb_add_segment(packet_builder_t * b, size_t max_size) {
-        if(!b) { return PB_INVALID_SEGMENT_ID; }
+    return PB_INVALID_SEGMENT_ID;
+}
 
-        if(b->err) { return PB_INVALID_SEGMENT_ID; }
+/**
+ * @brief sum the lengths of segments starting from start_seg_id up to the last segment
+ *
+ * @param b
+ * @param start_seg_id
+ * @return size_t
+ */
+size_t pb_sum_segment_len(packet_builder_t *b, pb_segment_id_t start_seg_id) {
+    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
 
-        if(b->compacted) {
-            b->err = UTIL_EINVAL;
-            return PB_INVALID_SEGMENT_ID;
-        }
-
-        if(b->num_segments >= 8) {
-            b->err = UTIL_EBOUNDS;
-            return PB_INVALID_SEGMENT_ID;
-        }
-
-        /* Scan existing segments to check if we have room */
-        size_t used = 0;
-        for(uint8_t i = 0; i < b->num_segments; i++) { used += b->segments[i].limit; }
-
-        if(used + max_size > b->capacity) {
-            b->err = UTIL_EBOUNDS;
-            return PB_INVALID_SEGMENT_ID;
-        }
-
-        pb_segment_id_t id = b->num_segments++;
-        b->segments[id].limit = max_size;
-        b->segments[id].len = 0;
-
-        return id;
+    pb_segment_id_t start_index = find_segment_index(b, start_seg_id);
+    if(start_index == PB_INVALID_SEGMENT_ID) {
+        b->err = UTIL_ENOTFOUND;
+        return PB_INVALID_SEGMENT_SIZE;
     }
 
-    size_t pb_segment_len(packet_builder_t * b, pb_segment_id_t seg_id) {
-        if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+    size_t total = 0;
+    for(uint8_t i = start_index; i < b->num_segments; i++) { total += b->limits[i].len; }
 
-        if(seg_id >= b->num_segments) {
-            b->err = UTIL_EBOUNDS;
-            return PB_INVALID_SEGMENT_SIZE;
-        }
-        return (b->compacted ? b->segments[seg_id].limit : b->segments[seg_id].len);
+    return total;
+}
+
+/* Internal helper to check bounds and find segment index */
+static pb_segment_id_t check_bounds(packet_builder_t *b, const char *field_name, size_t write_len) {
+    if(!b) { return PB_INVALID_SEGMENT_ID; }
+
+    if(b->err) { return PB_INVALID_SEGMENT_ID; }
+
+    if(b->compacted) {
+        b->err = UTIL_ENOTSUPPORTED;
+        pb_set_err_field(b, field_name);
+        return PB_INVALID_SEGMENT_ID;
     }
 
-
-    util_err_t pb_get_err(packet_builder_t * b) {
-        if(!b) { return UTIL_EINVAL; }
-
-        return b->err;
+    if(b->default_write_seg_id == PB_INVALID_SEGMENT_ID) {
+        b->err = UTIL_ENOTFOUND;
+        pb_set_err_field(b, field_name);
+        return PB_INVALID_SEGMENT_ID;
     }
 
-    bool pb_set_err(packet_builder_t * b, int err) {
-        if(!b) { return false; }
-
-        b->err = err;
-
-        return true;
+    pb_segment_id_t seg_index = find_segment_index(b, b->default_write_seg_id);
+    if(seg_index == PB_INVALID_SEGMENT_ID) {
+        b->err = UTIL_ENOTFOUND;
+        pb_set_err_field(b, field_name);
+        return PB_INVALID_SEGMENT_ID;
     }
 
-    /**
-     * @brief sum the lengths of segments starting from start_seg_id up to the last segment
-     *
-     * @param b
-     * @param start_seg_id
-     * @return size_t
-     */
-    size_t pb_sum_segment_len(packet_builder_t * b, pb_segment_id_t start_seg_id) {
-        if(!b) { return PB_INVALID_SEGMENT_SIZE; }
-
-        if(start_seg_id >= b->num_segments) {
-            b->err = UTIL_EBOUNDS;
-            return PB_INVALID_SEGMENT_SIZE;
-        }
-
-        size_t total = 0;
-        for(uint8_t i = start_seg_id; i < b->num_segments; i++) { total += b->segments[i].len; }
-
-        return total;
+    if(b->limits[seg_index].len + write_len > b->limits[seg_index].limit) {
+        b->err = UTIL_EBOUNDS;
+        pb_set_err_field(b, field_name);
+        return PB_INVALID_SEGMENT_ID;
     }
 
-    /* Internal helper to check bounds */
-    static bool check_bounds(packet_builder_t * b, pb_segment_id_t seg_id, size_t write_len) {
-        if(!b) { return false; }
+    return seg_index;
+}
 
-        if(b->err) { return false; }
+/* Internal helper to calculate start offset of a segment by index */
+static size_t calc_segment_offset_by_index(packet_builder_t *b, pb_segment_id_t seg_index) {
+    size_t offset = 0;
+    for(uint8_t i = 0; i < seg_index; i++) { offset += b->limits[i].limit; }
+    return offset;
+}
 
-        if(seg_id >= b->num_segments) {
-            b->err = UTIL_EBOUNDS;
-            return false;
-        }
 
-        if(b->segments[seg_id].len + write_len > b->segments[seg_id].limit) {
-            b->err = UTIL_EBOUNDS;
-            return false;
-        }
-        return true;
+bool pb_write_u8(packet_builder_t *b, const char *field_name, uint8_t val) {
+    pb_segment_id_t seg_index = check_bounds(b, field_name, 1);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    b->base[offset] = val;
+
+    b->limits[seg_index].len += 1;
+
+    return true;
+}
+
+bool pb_write_u16_le(packet_builder_t *b, const char *field_name, uint16_t val) {
+    size_t write_size = sizeof(uint16_t);
+
+    pb_segment_id_t seg_index = check_bounds(b, field_name, write_size);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    uint8_t *p = b->base + offset;
+    for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+
+    b->limits[seg_index].len += write_size;
+
+    return true;
+}
+
+bool pb_write_u32_le(packet_builder_t *b, const char *field_name, uint32_t val) {
+    size_t write_size = sizeof(uint32_t);
+
+    pb_segment_id_t seg_index = check_bounds(b, field_name, write_size);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    uint8_t *p = b->base + offset;
+    for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+
+    b->limits[seg_index].len += write_size;
+
+    return true;
+}
+
+bool pb_write_u64_le(packet_builder_t *b, const char *field_name, uint64_t val) {
+    size_t write_size = sizeof(uint64_t);
+
+    pb_segment_id_t seg_index = check_bounds(b, field_name, write_size);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    uint8_t *p = b->base + offset;
+    for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+
+    b->limits[seg_index].len += write_size;
+
+    return true;
+}
+
+bool pb_write_u16_be(packet_builder_t *b, const char *field_name, uint16_t val) {
+    size_t write_size = sizeof(uint16_t);
+
+    pb_segment_id_t seg_index = check_bounds(b, field_name, write_size);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    uint8_t *p = b->base + offset;
+    for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+
+    b->limits[seg_index].len += write_size;
+
+    return true;
+}
+
+bool pb_write_u32_be(packet_builder_t *b, const char *field_name, uint32_t val) {
+    size_t write_size = sizeof(uint32_t);
+
+    pb_segment_id_t seg_index = check_bounds(b, field_name, write_size);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    uint8_t *p = b->base + offset;
+    for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+
+    b->limits[seg_index].len += write_size;
+
+    return true;
+}
+
+bool pb_write_u64_be(packet_builder_t *b, const char *field_name, uint64_t val) {
+    size_t write_size = sizeof(uint64_t);
+
+    pb_segment_id_t seg_index = check_bounds(b, field_name, write_size);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    uint8_t *p = b->base + offset;
+    for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+
+    b->limits[seg_index].len += write_size;
+
+    return true;
+}
+
+bool pb_write_bytes(packet_builder_t *b, const char *field_name, uint8_t *data, size_t len) {
+    pb_segment_id_t seg_index = check_bounds(b, field_name, len);
+    if(seg_index == PB_INVALID_SEGMENT_ID) { return false; }
+
+    size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
+    memcpy(b->base + offset, data, len);
+    b->limits[seg_index].len += len;
+
+    return true;
+}
+
+
+#define COLUMNS (16)
+
+/**
+ * @brief Log a buffer's contents as hex.
+ *
+ * @param func name of the function in which the log is generated
+ * @param line_num line number in the source file
+ * @param lvl log level
+ * @param modules bitmask of modules this log applies to
+ * @param buf buffer containing the bytes to log
+ * @param seg_id segment ID to dump
+ */
+void log_pb_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, packet_builder_t *buf,
+                       pb_segment_id_t seg_id) {
+    if(!buf) {
+        log_impl(func, line_num, lvl, modules, "<null>");
+        return;
     }
 
-    /* Internal helper to calculate start offset of a segment */
-    static size_t calc_segment_offset(packet_builder_t * b, pb_segment_id_t seg_id) {
-        size_t offset = 0;
-        for(uint8_t i = 0; i < seg_id; i++) { offset += b->segments[i].limit; }
-        return offset;
+    if(!buf->base) {
+        log_impl(func, line_num, lvl, modules, "<null base>");
+        return;
     }
 
-
-    bool pb_write_u8(packet_builder_t * b, pb_segment_id_t seg_id, uint8_t val) {
-        if(!check_bounds(b, seg_id, 1)) { return false; }
-
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        b->base[offset] = val;
-
-        b->segments[seg_id].len += 1;
-
-        return true;
+    /* Find the segment with this ID */
+    pb_segment_id_t seg_index = find_segment_index(buf, seg_id);
+    if(seg_index == PB_INVALID_SEGMENT_ID) {
+        log_impl(func, line_num, lvl, modules, "<invalid segment ID>");
+        return;
     }
 
-    bool pb_write_u16_le(packet_builder_t * b, pb_segment_id_t seg_id, uint16_t val) {
-        size_t write_size = sizeof(uint16_t);
+    /* get the offset to the segment */
+    size_t offset = calc_segment_offset_by_index(buf, seg_index);
 
-        if(!check_bounds(b, seg_id, write_size)) { return false; }
+    uint8_t *data = buf->base + offset;
 
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        uint8_t *p = b->base + offset;
-        for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
-
-        b->segments[seg_id].len += write_size;
-
-        return true;
+    size_t data_len = buf->limits[seg_index].len;
+    if(data_len == 0) {
+        log_impl(func, line_num, lvl, modules, "<empty>");
+        return;
     }
 
-    bool pb_write_u32_le(packet_builder_t * b, pb_segment_id_t seg_id, uint32_t val) {
-        size_t write_size = sizeof(uint32_t);
+    size_t total_rows = (data_len + (COLUMNS - 1)) / COLUMNS;
+    for(size_t row = 0; row < total_rows; ++row) {
+        char row_buf[(COLUMNS * 3) + 6] = {0};
+        char *p = row_buf;
 
-        if(!check_bounds(b, seg_id, write_size)) { return false; }
+        p += sprintf(p, "%04zx:", row * COLUMNS);
 
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        uint8_t *p = b->base + offset;
-        for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+        size_t start = row * COLUMNS;
+        size_t end = start + COLUMNS;
 
-        b->segments[seg_id].len += write_size;
+        if(end > data_len) { end = data_len; }
 
-        return true;
+        for(size_t i = start; i < end; ++i) { p += sprintf(p, " %02x", (unsigned)data[i]); }
+
+        log_impl(func, line_num, lvl, modules, "%s", row_buf);
     }
-
-    bool pb_write_u64_le(packet_builder_t * b, pb_segment_id_t seg_id, uint64_t val) {
-        size_t write_size = sizeof(uint64_t);
-
-        if(!check_bounds(b, seg_id, write_size)) { return false; }
-
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        uint8_t *p = b->base + offset;
-        for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
-
-        b->segments[seg_id].len += write_size;
-
-        return true;
-    }
-
-    bool pb_write_u16_be(packet_builder_t * b, pb_segment_id_t seg_id, uint16_t val) {
-        size_t write_size = sizeof(uint16_t);
-
-        if(!check_bounds(b, seg_id, write_size)) { return false; }
-
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        uint8_t *p = b->base + offset;
-        for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
-
-        b->segments[seg_id].len += write_size;
-
-        return true;
-    }
-
-    bool pb_write_u32_be(packet_builder_t * b, pb_segment_id_t seg_id, uint32_t val) {
-        size_t write_size = sizeof(uint32_t);
-
-        if(!check_bounds(b, seg_id, write_size)) { return false; }
-
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        uint8_t *p = b->base + offset;
-        for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
-
-        b->segments[seg_id].len += write_size;
-
-        return true;
-    }
-
-    bool pb_write_u64_be(packet_builder_t * b, pb_segment_id_t seg_id, uint64_t val) {
-        size_t write_size = sizeof(uint64_t);
-
-        if(!check_bounds(b, seg_id, write_size)) { return false; }
-
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        uint8_t *p = b->base + offset;
-        for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
-
-        b->segments[seg_id].len += write_size;
-
-        return true;
-    }
-
-    bool pb_write_bytes(packet_builder_t * b, pb_segment_id_t seg_id, uint8_t *data, size_t len) {
-        if(!check_bounds(b, seg_id, len)) { return false; }
-
-        size_t offset = calc_segment_offset(b, seg_id) + b->segments[seg_id].len;
-        memcpy(b->base + offset, data, len);
-        b->segments[seg_id].len += len;
-
-        return true;
-    }
+}
