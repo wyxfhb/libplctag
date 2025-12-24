@@ -271,7 +271,7 @@ util_err_t stream_write(socket_t sock, packet_builder_t *out);
  * @param in - Buffer to store the received data
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t stream_read(socket_t sock, buf_t *in);
+util_err_t stream_read(socket_t sock, data_reader_t *in);
 
 
 /* Datagram helpers */
@@ -287,7 +287,7 @@ util_err_t stream_read(socket_t sock, buf_t *in);
  * @param out - Buffer containing the data to send
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t dgram_send(socket_t sock, socket_address_t *addr, buf_t *out);
+util_err_t dgram_send(socket_t sock, socket_address_t *addr, packet_builder_t *out);
 
 /**
  * @brief Receive data on a socket.
@@ -302,7 +302,7 @@ util_err_t dgram_send(socket_t sock, socket_address_t *addr, buf_t *out);
  * @param in - Buffer to store the received data
  * @return util_err_t - UTIL_OK on success, error code on failure.
  */
-util_err_t dgram_receive(socket_t sock, socket_address_t *from_addr, buf_t *in);
+util_err_t dgram_receive(socket_t sock, socket_address_t *from_addr, data_reader_t *in);
 
 #ifdef __cplusplus
 }
