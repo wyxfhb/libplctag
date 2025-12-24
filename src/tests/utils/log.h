@@ -109,19 +109,6 @@ bool log_is_enabled(log_module_mask_t modules, log_level_t level);
 void log_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, const char *templ, ...);
 
 /**
- * @brief Dump bytes from a buffer to the log (internal).
- *
- * @param func name of the function in which the log is generated
- * @param line_num line number in the source file
- * @param lvl log level
- * @param modules bitmask of modules this log applies to
- * @param data buffer containing the bytes to dump
- */
-void log_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, buf_t *data);
-
-/* Logging macros */
-
-/**
  * @brief Log a message if enabled for the given modules and level.
  *
  * @param modules Bitmask of modules this log applies to (use LOG_MODULE_* or combine with |)
@@ -132,19 +119,6 @@ void log_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_
     do {                                                                                              \
         if(log_is_enabled(modules, level)) log_impl(__func__, __LINE__, level, modules, __VA_ARGS__); \
     } while(0)
-
-/**
- * @brief Log buffer contents if enabled for the given modules and level.
- *
- * @param modules Bitmask of modules this log applies to
- * @param level Log level
- * @param buf Buffer to dump
- */
-#define pdlog_bytes(modules, level, buf)                                                              \
-    do {                                                                                              \
-        if(log_is_enabled(modules, level)) log_bytes_impl(__func__, __LINE__, level, modules, (buf)); \
-    } while(0)
-
 
 #ifdef __cplusplus
 }
