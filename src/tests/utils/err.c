@@ -49,6 +49,7 @@ const char *util_err_str(util_err_t e) {
         case UTIL_ECONNREFUSED: return "Connection refused";
         case UTIL_ECONNRESET: return "Connection reset by peer";
         case UTIL_EDESTROYED: return "Object destroyed";
+        case UTIL_EDUPLICATE: return "Duplicate entry";
         case UTIL_EHOSTUNREACH: return "Host unreachable";
         case UTIL_EINTERNAL: return "Internal error";
         case UTIL_EINTR: return "Interrupted system call";

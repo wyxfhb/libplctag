@@ -52,6 +52,7 @@ typedef enum {
     UTIL_ECONNREFUSED,            // connection refused
     UTIL_ECONNRESET,              // connection reset by peer
     UTIL_EDESTROYED,              // object destroyed
+    UTIL_EDUPLICATE,              // duplicate entry
     UTIL_EHOSTUNREACH,            // host unreachable
     UTIL_EINTR,                   // interrupted system call
     UTIL_EINTERNAL,               // internal error
@@ -65,7 +66,7 @@ typedef enum {
     UTIL_ENULL,                   // null pointer
     UTIL_EREAD,                   // read failed
     UTIL_ERESOLVE,                // address resolution failed
-    UTIL_ERESOURCE,               // resource exhausted
+    UTIL_ERESOURCE,               // resource exhausted, as in memory or file descriptors
     UTIL_ETIMEOUT,                // operation timed out
     UTIL_EWRITE,                  // write failed
     UTIL_ESOCKET,                 // socket creation failed
