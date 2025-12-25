@@ -579,7 +579,7 @@ util_err_t modbus_process_request(uint8_t function_code, data_reader_t *request,
     if(err != UTIL_OK) { modbus_build_exception_response(response, req_header, function_code, err); }
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Built Modbus response:");
-    pdlog_pb_bytes(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, response, pb_get_compacted_segment_id(response));
+    pdlog_pb_bytes(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, response, MODBUS_PAYLOAD_SEG_ID);
 
     return err;
 }
