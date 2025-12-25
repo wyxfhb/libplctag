@@ -136,6 +136,7 @@ struct server_ctx_s {
     volatile int running;
     int64_t start_time_us;
     server_stats_t stats;
+    uint8_t unit_id;
 };
 
 /* ============================================================================
@@ -410,10 +411,50 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
               "MBAP Header - Transaction ID: %u, Protocol ID: %u, Length: %u, Unit ID: %u", client->mbap_header.transaction_id,
               client->mbap_header.protocol_id, client->mbap_header.length, client->mbap_header.unit_id);
 
-        /* Check unit ID (FIXME: For multi-unit servers, check against allowed units) */
-        if(client->mbap_header.unit_id != 0x00 && client->mbap_header.unit_id != 0xFF) {
-            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Unsupported unit ID: %u", client->mbap_header.unit_id);
-            break;
+        /* Check unit ID against server's configured unit ID */
+        if(client->mbap_header.unit_id != client->server->unit_id) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Unit ID mismatch: received %u, server is %u",
+                  client->mbap_header.unit_id, client->server->unit_id);
+
+            /* Reset send buffer and add segments */
+            if(!pb_reset(&client->send_buf)) {
+                pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to reset send buffer %s",
+                      util_err_str(pb_get_err(&client->send_buf)));
+                break;
+            }
+
+            if(!pb_add_segment(&client->send_buf, MODBUS_MBAP_SEG_ID, MBAP_HEADER_SIZE)) {
+                pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to add MBAP segment %s",
+                      util_err_str(pb_get_err(&client->send_buf)));
+                break;
+            }
+
+            if(!pb_add_segment(&client->send_buf, MODBUS_PAYLOAD_SEG_ID, MODBUS_MAX_PDU_SIZE)) {
+                pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to add payload segment %s",
+                      util_err_str(pb_get_err(&client->send_buf)));
+                break;
+            }
+
+            /* Send exception response for unit ID mismatch */
+            modbus_build_exception_response(&client->send_buf, &client->mbap_header, 0x00, UTIL_EINVAL);
+
+            /* Compact and send the exception response */
+            if(!pb_compact(&client->send_buf, PB_DEFAULT_COMPACTED_SEGMENT_ID)) {
+                pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to compact response buffer %s",
+                      util_err_str(pb_get_err(&client->send_buf)));
+                break;
+            }
+
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL,
+                  "Sending exception response for unit ID mismatch");
+            stream_write_yield(handle, &client->send_buf, err);
+            if(err != UTIL_OK) {
+                pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to send exception response: %s", util_err_str(err));
+            }
+
+            /* Continue to next request */
+            memset(&client->timing, 0, sizeof(client->timing));
+            continue;
         }
 
         /* Extract function code */
@@ -680,6 +721,12 @@ static args_flag_def_t flags[] = {
      .repeat = ARGS_ONCE,
      .description = "Number of input registers",
      .default_value = {.has_default = true, .value.int_val = 1000}},
+    {.name = "unit",
+     .type = ARGS_TYPE_INT,
+     .required = ARGS_OPTIONAL,
+     .repeat = ARGS_ONCE,
+     .description = "Modbus unit ID for this server",
+     .default_value = {.has_default = true, .value.int_val = 1}},
     {.name = "help",
      .type = ARGS_TYPE_BOOL,
      .required = ARGS_OPTIONAL,
@@ -751,6 +798,7 @@ int main(int argc, char *argv[]) {
     int64_t di_val = args_get_int(&args_result, "discrete-inputs");
     int64_t hr_val = args_get_int(&args_result, "holding-registers");
     int64_t ir_val = args_get_int(&args_result, "input-registers");
+    int64_t unit_val = args_get_int(&args_result, "unit");
 
     if(coils_val < 0 || coils_val > 65535 || di_val < 0 || di_val > 65535 || hr_val < 0 || hr_val > 65535 || ir_val < 0
        || ir_val > 65535) {
@@ -758,6 +806,14 @@ int main(int argc, char *argv[]) {
         args_free(&args_result);
         return EXIT_FAILURE;
     }
+
+    if(unit_val < 0 || unit_val > 255) {
+        pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_ERROR, "Unit ID must be 0-255");
+        args_free(&args_result);
+        return EXIT_FAILURE;
+    }
+
+    server.unit_id = (uint8_t)unit_val;
 
     register_storage_t *temp_storage = register_storage_create((size_t)coils_val, (size_t)di_val, (size_t)hr_val, (size_t)ir_val);
     if(!temp_storage) {
@@ -768,6 +824,7 @@ int main(int argc, char *argv[]) {
     server.storage = temp_storage;
 
     pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_INFO, "Modbus server starting");
+    pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_INFO, "  Unit ID: %u", server.unit_id);
     pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_INFO, "  Coils: %zu", (size_t)coils_val);
     pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_INFO, "  Discrete Inputs: %zu", (size_t)di_val);
     pdlog(LOG_MODULE_MODBUS_SERVER, LOG_LEVEL_INFO, "  Holding Registers: %zu", (size_t)hr_val);
