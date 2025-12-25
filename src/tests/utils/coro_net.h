@@ -332,19 +332,24 @@ socket_t coro_get_fd(coro_task_handle_t task);
  *   socket_address_t to_addr;
  *   dgram_send_yield(task, &buf, &to_addr, err);
  */
-#define dgram_send_yield(task, buf, to_addr, err)                                       \
-    do {                                                                                \
-        socket_t __fd;                                                                  \
-        util_err_t __err;                                                               \
-        do {                                                                            \
-            __fd = coro_get_fd(task);                                                   \
-            __err = dgram_send(__fd, (to_addr), (buf));                                 \
-            if(__err == UTIL_EAGAIN) {                                                  \
-                coro_wait_for_event((task), CORO_EVENT_WRITE);                          \
-                __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */ \
-            }                                                                           \
-        } while(__err == UTIL_EAGAIN);                                                  \
-        (err) = __err;                                                                  \
+#define dgram_send_yield(task, buf, to_addr, err)                                                        \
+    do {                                                                                                 \
+        socket_t __fd;                                                                                   \
+        util_err_t __err;                                                                                \
+        if(!pb_compact(buf)) {                                                                           \
+            pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_ERROR, "Failed to compact packet builder before send"); \
+            (err) = pb_get_err(buf);                                                                     \
+            break;                                                                                       \
+        }                                                                                                \
+        do {                                                                                             \
+            __fd = coro_get_fd(task);                                                                    \
+            __err = dgram_send(__fd, (to_addr), (buf));                                                  \
+            if(__err == UTIL_EAGAIN) {                                                                   \
+                coro_wait_for_event((task), CORO_EVENT_WRITE);                                           \
+                __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */                  \
+            }                                                                                            \
+        } while(__err == UTIL_EAGAIN);                                                                   \
+        (err) = __err;                                                                                   \
     } while(0)
 
 /**
@@ -352,20 +357,27 @@ socket_t coro_get_fd(coro_task_handle_t task);
  * Usage:
  *   stream_write_yield(task, &buf, err);
  */
-#define stream_write_yield(task, buf, err)                                              \
-    do {                                                                                \
-        socket_t __fd;                                                                  \
-        util_err_t __err;                                                               \
-        __err = UTIL_OK;                                                                \
-        while(pb_unconsumed_size((buf)) > 0) {                                          \
-            __fd = coro_get_fd(task);                                                   \
-            __err = stream_write(__fd, (buf));                                          \
-            if(__err == UTIL_EAGAIN) {                                                  \
-                coro_wait_for_event((task), CORO_EVENT_WRITE);                          \
-                __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */ \
-            } else if(__err != UTIL_OK) {                                               \
-                break;                                                                  \
-            }                                                                           \
-        }                                                                               \
-        (err) = __err;                                                                  \
+#define stream_write_yield(task, buf, err)                                                                           \
+    do {                                                                                                             \
+        socket_t __fd;                                                                                               \
+        util_err_t __err = UTIL_OK;                                                                                  \
+        if(!pb_compact(buf, PB_DEFAULT_COMPACTED_SEGMENT_ID)) {                                                      \
+            pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_WARN, "Failed to compact packet builder before write");             \
+            (err) = pb_get_err(buf);                                                                                 \
+            break;                                                                                                   \
+        }                                                                                                            \
+        size_t __unconsumed_size = pb_unconsumed_size((buf));                                                        \
+        pdlog(LOG_MODULE_CORO_NET, LOG_LEVEL_DETAIL, "Attempting to write %zu bytes to fd=%d", __unconsumed_size,    \
+              (int)coro_get_fd(task));                                                                               \
+        while((__unconsumed_size = pb_unconsumed_size((buf))) > 0 && __unconsumed_size != PB_INVALID_SEGMENT_SIZE) { \
+            __fd = coro_get_fd(task);                                                                                \
+            __err = stream_write(__fd, (buf));                                                                       \
+            if(__err == UTIL_EAGAIN) {                                                                               \
+                coro_wait_for_event((task), CORO_EVENT_WRITE);                                                       \
+                __err = UTIL_EAGAIN; /* Re-initialize after yield for loop condition */                              \
+            } else if(__err != UTIL_OK) {                                                                            \
+                break;                                                                                               \
+            }                                                                                                        \
+        }                                                                                                            \
+        (err) = __err;                                                                                               \
     } while(0)
