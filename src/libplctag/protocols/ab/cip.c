@@ -118,7 +118,7 @@ static int parse_link_address(const char *path, size_t *path_index, uint8_t port
     /* Check for DH(node) format */
     if(str_cmp_i_n(&path[p_idx], "DH(", 3) == 0 || str_cmp_i_n(&path[p_idx], "DHP(", 4) == 0) {
         int val = 0;
-        size_t paren_start = p_idx;
+        // size_t paren_start = p_idx;
 
         /* Skip "DH(" or "DHP(" */
         p_idx += (path[p_idx + 2] == 'P') ? 4 : 3;
@@ -323,7 +323,7 @@ int cip_encode_path(const char *path, int *needs_connection, plc_type_t plc_type
     /* Parse path segments - check for old-style DH+ first (A:N:M or B:N:M), then try new format */
     while(path && path[path_index] && path_index < path_len && conn_path_index < max_conn_path_size) {
         size_t save_path_index = path_index;
-        size_t save_conn_path_index = conn_path_index;
+        // size_t save_conn_path_index = conn_path_index;
         uint8_t port_num = 0;
 
         /* Skip leading spaces and commas */
