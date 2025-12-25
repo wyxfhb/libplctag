@@ -34,6 +34,7 @@
 
 #include "packet_builder.h"
 #include "err.h"
+#include "log.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -105,9 +106,18 @@ size_t pb_get_total_len(packet_builder_t *b) {
 }
 
 size_t pb_unconsumed_size(packet_builder_t *b) {
-    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+    if(!b) {
+        pdlog(LOG_MODULE_PACKET_BUILDER, LOG_LEVEL_WARN, "Packet builder is NULL");
+        return PB_INVALID_SEGMENT_SIZE;
+    }
 
-    if(!b->compacted) { return PB_INVALID_SEGMENT_SIZE; }
+    if(!b->compacted) {
+        pdlog(LOG_MODULE_PACKET_BUILDER, LOG_LEVEL_WARN, "Packet builder is not compacted");
+        return PB_INVALID_SEGMENT_SIZE;
+    }
+
+    pdlog(LOG_MODULE_PACKET_BUILDER, LOG_LEVEL_DETAIL, "Unconsumed size: %zu, limit=%zu, len=%zu",
+          b->limits[0].limit - b->limits[0].len, b->limits[0].limit, b->limits[0].len);
 
     return b->limits[0].limit - b->limits[0].len;
 }
@@ -147,7 +157,7 @@ bool pb_compact(packet_builder_t *b, pb_segment_id_t packet_seg_id) {
     /* create a single segment with all the data. */
     if(b->num_segments > 0) {
         b->limits[0].limit = dest_offset;
-        b->limits[0].len = dest_offset;
+        b->limits[0].len = 0;
         b->segment_ids[0] = packet_seg_id;
         b->num_segments = 1;
     }
