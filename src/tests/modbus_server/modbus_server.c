@@ -397,17 +397,24 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
 
         /* we got at least enough data for a full packet */
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL,
-              "Received complete Modbus request of %zu bytes:", buf_read_size(&client->recv_buf));
+              "Received complete Modbus request of %zu bytes:", data_reader_read_size(&client->recv_buf));
         pdlog_dr_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->recv_buf);
 
-        /* get the header info */
-        modbus_parse_mbap_header(&client->recv_buf, &client->mbap_header);
+        /* Get the MBAP header info */
+        if(modbus_parse_mbap_header(&client->recv_buf, &client->mbap_header) != UTIL_OK) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to parse MBAP header");
+            break;
+        }
 
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL,
               "MBAP Header - Transaction ID: %u, Protocol ID: %u, Length: %u, Unit ID: %u", client->mbap_header.transaction_id,
               client->mbap_header.protocol_id, client->mbap_header.length, client->mbap_header.unit_id);
 
-        /* FIXME - we should check the unit ID here. */
+        /* Check unit ID (FIXME: For multi-unit servers, check against allowed units) */
+        if(client->mbap_header.unit_id != 0x00 && client->mbap_header.unit_id != 0xFF) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Unsupported unit ID: %u", client->mbap_header.unit_id);
+            break;
+        }
 
         /* Extract function code */
         if(!data_reader_read_u8(&client->recv_buf, "function_code", &function_code)) {
@@ -416,51 +423,62 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
         }
 
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Processing function code 0x%02x", function_code);
-        /* Capture process start time */
-        client->timing.process_start_us = util_time_us();
 
-        /* Reset send buffer and generate response */
+        /* Reset send buffer */
         if(!pb_reset(&client->send_buf)) {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to reset send buffer %s",
-                  pb_get_err_str(&client->send_buf));
+                  util_err_str(pb_get_err(&client->send_buf)));
             break;
         }
 
-        /* Process request */
-        err = modbus_process_request(function_code, &client->recv_buf, &client->send_buf, &client->mbap_header,
-                                     client->server->storage);
+        /* Add segments BEFORE processing - MBAP segment for header, Payload segment for data */
+        if(!pb_add_segment(&client->send_buf, MODBUS_MBAP_SEG_ID, MBAP_HEADER_SIZE)) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to add MBAP segment %s",
+                  util_err_str(pb_get_err(&client->send_buf)));
+            break;
+        }
+
+        if(!pb_add_segment(&client->send_buf, MODBUS_PAYLOAD_SEG_ID, MODBUS_MAX_PDU_SIZE)) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to add payload segment %s",
+                  util_err_str(pb_get_err(&client->send_buf)));
+            break;
+        }
+
+        /* Capture process start time */
+        client->timing.process_start_us = util_time_us();
+
+        /* Process request - dispatcher writes to payload segment */
+        err = modbus_process_request(function_code, &client->recv_buf, &client->send_buf,
+                                    MODBUS_PAYLOAD_SEG_ID, &client->mbap_header, client->server->storage);
 
         /* Capture process complete time */
         client->timing.process_complete_us = util_time_us();
 
-        /* add the segments to the response */
-        pb_segment_id_t mbap_segment_id =
-            pb_add_segment(&client->send_buf, 7 /* MBAP is 6 plus the unit ID */); /* placeholder for header */
-        pb_segment_id_t payload_seg_id = pb_add_segment(&client->send_buf, MODBUS_MAX_PDU_SIZE);
-        if(pb_get_err(&client->send_buf) != UTIL_OK) {
-            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to add segments to response buffer %s",
-                  pb_get_err_str(&client->send_buf));
-            break;
-        }
-
-        if(err != UTIL_OK || mbap_segment_id == PB_INVALID_SEGMENT_ID || payload_seg_id == PB_INVALID_SEGMENT_ID) {
-            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Request processing failed %s", util_err_str(err));
-
+        if(err != UTIL_OK) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Request processing failed: %s", util_err_str(err));
             modbus_build_exception_response(&client->send_buf, &client->mbap_header, function_code, err);
         } else {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Request processed successfully");
         }
-        pb_compact(&client->send_buf);
 
+        /* Compact segments into contiguous packet */
+        if(!pb_compact(&client->send_buf, PB_DEFAULT_COMPACTED_SEGMENT_ID)) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to compact response buffer %s",
+                  util_err_str(pb_get_err(&client->send_buf)));
+            break;
+        }
+
+        /* Log prepared response */
         pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL,
               "Prepared response of %zu bytes:", pb_get_total_len(&client->send_buf));
-        pdlog_pb_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->send_buf, 0);
+        pdlog_pb_bytes(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, &client->send_buf,
+                      pb_get_compacted_segment_id(&client->send_buf));
 
         /* Capture send start time */
         client->timing.send_start_us = util_time_us();
 
-        /* Send response */
-        pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Sending response of %zu bytes", buf_write_pos(&client->send_buf));
+        /* Send response using stream_write macro */
+        pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Sending response");
         stream_write_yield(handle, &client->send_buf, err);
         if(err != UTIL_OK) {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to send response: %s", util_err_str(err));

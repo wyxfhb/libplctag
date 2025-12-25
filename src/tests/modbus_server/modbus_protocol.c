@@ -81,65 +81,77 @@ util_err_t modbus_parse_mbap_header(data_reader_t *request, mbap_header_t *heade
 }
 
 /* Build MBAP response header in buffer */
-util_err_t modbus_build_response_header(packet_builder_t *response, mbap_header_t *req_header, pb_segment_id_t mbap_segment_id,
+util_err_t modbus_build_response_header(packet_builder_t *response, const mbap_header_t *req_header,
                                         pb_segment_id_t payload_seg_id) {
     if(!response || !req_header) { return UTIL_EINVAL; }
 
-    /* get the payload segment length */
-    size_t pdu_length = pb_get_segment_length(response, payload_seg_id);
+    /* Set default segment to MBAP segment for writing header */
+    if(!pb_set_default_seg_id(response, MODBUS_MBAP_SEG_ID)) {
+        return pb_get_err(response);
+    }
 
-    /* Write MBAP header */
+    /* Get payload length from payload segment */
+    size_t pdu_length = pb_segment_len(response, payload_seg_id);
+
+    /* Write MBAP header fields to MBAP segment */
     bool ok = true;
-    ok = ok && pb_write_u16_be(response, "transaction_id", mbap_segment_id, req_header->transaction_id);
-    ok = ok && pb_write_u16_be(response, "protocol_id", mbap_segment_id, 0);         /* protocol_id = 0 */
-    ok = ok && pb_write_u16_be(response, "length", mbap_segment_id, pdu_length + 1); /* length = unit_id + PDU */
-    ok = ok && pb_write_u8(response, "unit_id", mbap_segment_id, req_header->unit_id);
+    ok = ok && pb_write_u16_be(response, "transaction_id", req_header->transaction_id);
+    ok = ok && pb_write_u16_be(response, "protocol_id", 0);         /* protocol_id = 0 */
+    ok = ok && pb_write_u16_be(response, "length", pdu_length + 1); /* length = unit_id + PDU */
+    ok = ok && pb_write_u8(response, "unit_id", req_header->unit_id);
 
     return pb_get_err(response);
 }
 
 /* Build exception response */
-void modbus_build_exception_response(packet_builder_t *response, mbap_header_t *req_header, uint8_t function_code,
+void modbus_build_exception_response(packet_builder_t *response, const mbap_header_t *req_header, uint8_t function_code,
                                      util_err_t error) {
     if(!response || !req_header) {
         pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "NULL pointer(s) to build exception response");
         return;
     }
 
-    /* ignore any existing segments */
+    /* Reset response buffer to clear any previous data */
     if(!pb_reset(response)) {
-        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to reset response buffer %s", pb_get_err_str(response));
+        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to reset response buffer: %s", util_err_str(pb_get_err(response)));
         return;
     }
 
-    pb_segment_id_t ex_mbap_seg_id = pb_add_segment(response, 7 /* MBAP is 6 plus the unit ID */);
-    if(ex_mbap_seg_id == PB_INVALID_SEGMENT_ID) {
-        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to add header segment %s", pb_get_err_str(response));
+    /* Add segments: MBAP (7 bytes) + payload (2 bytes: FC + exception code) */
+    if(!pb_add_segment(response, MODBUS_MBAP_SEG_ID, MBAP_HEADER_SIZE)) {
+        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to add MBAP segment %s", util_err_str(pb_get_err(response)));
         return;
     }
 
-    pb_segment_id_t ex_payload_id = pb_add_segment(response, 2 /* FC + exception code */);
-    if(ex_payload_id == PB_INVALID_SEGMENT_ID) {
-        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to add exception payload segment %s", pb_get_err_str(response));
+    if(!pb_add_segment(response, MODBUS_PAYLOAD_SEG_ID, 2)) {  /* FC + exception code */
+        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to add payload segment %s", util_err_str(pb_get_err(response)));
         return;
     }
 
-    /* Write exception function code (FC with high bit set) and exception code */
-    pb_write_u8(response, "function_code", ex_payload_id, function_code | 0x80);
-    pb_write_u8(response, "exception_code", ex_payload_id, util_err_to_modbus_exception(error));
+    /* Write exception function code (FC with high bit set) and exception code to payload segment */
+    if(!pb_set_default_seg_id(response, MODBUS_PAYLOAD_SEG_ID)) {
+        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to set default segment %s", util_err_str(pb_get_err(response)));
+        return;
+    }
 
-    /* Build response header with 2-byte PDU (FC + exception code) */
-    modbus_build_response_header(response, req_header, ex_mbap_seg_id, ex_payload_id);
+    if(!pb_write_u8(response, "function_code", function_code | 0x80) ||
+       !pb_write_u8(response, "exception_code", util_err_to_modbus_exception(error))) {
+        pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "Failed to write exception response %s", util_err_str(pb_get_err(response)));
+        return;
+    }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, MODBUS_PAYLOAD_SEG_ID);
 }
 
 
 /* Handle FC 0x01: Read Coils */
 static util_err_t handle_read_coils(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
-                                    mbap_header_t *req_header, register_storage_t *storage) {
+                                    const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t start_address, count;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "start_address", &start_address) || !buf_read_u16_be(request, "count", &count)) {
+    if(!data_reader_read_u16_be(request, "start_address", &start_address) || !data_reader_read_u16_be(request, "count", &count)) {
         return UTIL_EINVAL;
     }
 
@@ -167,15 +179,21 @@ static util_err_t handle_read_coils(data_reader_t *request, packet_builder_t *re
         return UTIL_EBOUNDS;
     }
 
-    /* Build response header */
-    modbus_build_response_header(response, req_header, 2 + byte_count); /* FC + byte_count + data */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        free(coil_data);
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, byte_count, coil data */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_READ_COILS) || !buf_write_u8(response, "byte_count", byte_count)
-       || !buf_write_bytes(response, "coil_data", coil_data, byte_count)) {
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_READ_COILS) || !pb_write_u8(response, "byte_count", byte_count)
+       || !pb_write_bytes(response, "coil_data", coil_data, byte_count)) {
         free(coil_data);
-        return UTIL_EBOUNDS;
+        return pb_get_err(response);
     }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     free(coil_data);
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Read %u coils from address %u", count, start_address);
@@ -184,11 +202,11 @@ static util_err_t handle_read_coils(data_reader_t *request, packet_builder_t *re
 
 /* Handle FC 0x02: Read Discrete Inputs */
 static util_err_t handle_read_discrete_inputs(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
-                                              mbap_header_t *req_header, register_storage_t *storage) {
+                                              const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t start_address, count;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "start_address", &start_address) || !buf_read_u16_be(request, "count", &count)) {
+    if(!data_reader_read_u16_be(request, "start_address", &start_address) || !data_reader_read_u16_be(request, "count", &count)) {
         return UTIL_EINVAL;
     }
 
@@ -216,15 +234,21 @@ static util_err_t handle_read_discrete_inputs(data_reader_t *request, packet_bui
         return UTIL_EBOUNDS;
     }
 
-    /* Build response header */
-    modbus_build_response_header(response, req_header, 2 + byte_count); /* FC + byte_count + data */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        free(input_data);
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, byte_count, input data */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_READ_DISCRETE_INPUTS)
-       || !buf_write_u8(response, "byte_count", byte_count) || !buf_write_bytes(response, "input_data", input_data, byte_count)) {
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_READ_DISCRETE_INPUTS)
+       || !pb_write_u8(response, "byte_count", byte_count) || !pb_write_bytes(response, "input_data", input_data, byte_count)) {
         free(input_data);
-        return UTIL_EBOUNDS;
+        return pb_get_err(response);
     }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     free(input_data);
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Read %u discrete inputs from address %u", count, start_address);
@@ -232,14 +256,14 @@ static util_err_t handle_read_discrete_inputs(data_reader_t *request, packet_bui
 }
 
 /* Handle FC 0x03: Read Holding Registers */
-static util_err_t handle_read_holding_registers(data_reader_t *request, packet_builder_t *response, mbap_header_t *req_header,
-                                                register_storage_t *storage) {
+static util_err_t handle_read_holding_registers(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
+                                                const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t start_address, count;
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Handling Read Holding Registers request");
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "start_address", &start_address) || !buf_read_u16_be(request, "count", &count)) {
+    if(!data_reader_read_u16_be(request, "start_address", &start_address) || !data_reader_read_u16_be(request, "count", &count)) {
         return UTIL_EINVAL;
     }
 
@@ -257,23 +281,29 @@ static util_err_t handle_read_holding_registers(data_reader_t *request, packet_b
         return UTIL_EBOUNDS;
     }
 
-    /* Build response header */
-    uint8_t byte_count = (uint8_t)(count * 2);
-    modbus_build_response_header(response, req_header, 2 + byte_count); /* FC + byte_count + data */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        free(register_data);
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, byte_count, register values (big-endian) */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_READ_HOLDING_REGISTERS)
-       || !buf_write_u8(response, "byte_count", byte_count)) {
+    uint8_t byte_count = (uint8_t)(count * 2);
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_READ_HOLDING_REGISTERS)
+       || !pb_write_u8(response, "byte_count", byte_count)) {
         free(register_data);
-        return UTIL_EBOUNDS;
+        return pb_get_err(response);
     }
 
     for(uint16_t i = 0; i < count; i++) {
-        if(!buf_write_u16_be(response, "register", register_data[i])) {
+        if(!pb_write_u16_be(response, "register", register_data[i])) {
             free(register_data);
-            return UTIL_EBOUNDS;
+            return pb_get_err(response);
         }
     }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     free(register_data);
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Read %u holding registers from address %u", count, start_address);
@@ -281,12 +311,12 @@ static util_err_t handle_read_holding_registers(data_reader_t *request, packet_b
 }
 
 /* Handle FC 0x04: Read Input Registers */
-static util_err_t handle_read_input_registers(data_reader_t *request, packet_builder_t *response, mbap_header_t *req_header,
-                                              register_storage_t *storage) {
+static util_err_t handle_read_input_registers(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
+                                              const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t start_address, count;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "start_address", &start_address) || !buf_read_u16_be(request, "count", &count)) {
+    if(!data_reader_read_u16_be(request, "start_address", &start_address) || !data_reader_read_u16_be(request, "count", &count)) {
         return UTIL_EINVAL;
     }
 
@@ -304,23 +334,29 @@ static util_err_t handle_read_input_registers(data_reader_t *request, packet_bui
         return UTIL_EBOUNDS;
     }
 
-    /* Build response header */
-    uint8_t byte_count = (uint8_t)(count * 2);
-    modbus_build_response_header(response, req_header, 2 + byte_count); /* FC + byte_count + data */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        free(register_data);
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, byte_count, register values (big-endian) */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_READ_INPUT_REGISTERS)
-       || !buf_write_u8(response, "byte_count", byte_count)) {
+    uint8_t byte_count = (uint8_t)(count * 2);
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_READ_INPUT_REGISTERS)
+       || !pb_write_u8(response, "byte_count", byte_count)) {
         free(register_data);
-        return UTIL_EBOUNDS;
+        return pb_get_err(response);
     }
 
     for(uint16_t i = 0; i < count; i++) {
-        if(!buf_write_u16_be(response, "register", register_data[i])) {
+        if(!pb_write_u16_be(response, "register", register_data[i])) {
             free(register_data);
-            return UTIL_EBOUNDS;
+            return pb_get_err(response);
         }
     }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     free(register_data);
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Read %u input registers from address %u", count, start_address);
@@ -328,12 +364,14 @@ static util_err_t handle_read_input_registers(data_reader_t *request, packet_bui
 }
 
 /* Handle FC 0x05: Write Single Coil */
-static util_err_t handle_write_single_coil(data_reader_t *request, packet_builder_t *response, mbap_header_t *req_header,
-                                           register_storage_t *storage) {
+static util_err_t handle_write_single_coil(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
+                                           const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t address, value;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "address", &address) || !buf_read_u16_be(request, "value", &value)) { return UTIL_EINVAL; }
+    if(!data_reader_read_u16_be(request, "address", &address) || !data_reader_read_u16_be(request, "value", &value)) {
+        return UTIL_EINVAL;
+    }
 
     /* Validate coil value (0x0000 = OFF, 0xFF00 = ON) */
     if(value != 0x0000 && value != 0xFF00) { return UTIL_EINVAL; }
@@ -343,14 +381,19 @@ static util_err_t handle_write_single_coil(data_reader_t *request, packet_builde
     uint8_t coil_bytes = coil_value ? 0x01 : 0x00;
     if(!register_storage_write_coils(storage, address, 1, &coil_bytes)) { return UTIL_EBOUNDS; }
 
-    /* Build response header (echo request as response) */
-    modbus_build_response_header(response, req_header, 5); /* FC + address + value */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, address, value */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_WRITE_SINGLE_COIL) || !buf_write_u16_be(response, "address", address)
-       || !buf_write_u16_be(response, "value", value)) {
-        return UTIL_EBOUNDS;
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_WRITE_SINGLE_COIL) || !pb_write_u16_be(response, "address", address)
+       || !pb_write_u16_be(response, "value", value)) {
+        return pb_get_err(response);
     }
+
+    /* Build response header (echo request as response) */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Wrote single coil at address %u = %s", address,
           coil_value ? "ON" : "OFF");
@@ -358,38 +401,45 @@ static util_err_t handle_write_single_coil(data_reader_t *request, packet_builde
 }
 
 /* Handle FC 0x06: Write Single Register */
-static util_err_t handle_write_single_register(data_reader_t *request, packet_builder_t *response, mbap_header_t *req_header,
-                                               register_storage_t *storage) {
+static util_err_t handle_write_single_register(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
+                                               const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t address, value;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "address", &address) || !buf_read_u16_be(request, "value", &value)) { return UTIL_EINVAL; }
+    if(!data_reader_read_u16_be(request, "address", &address) || !data_reader_read_u16_be(request, "value", &value)) {
+        return UTIL_EINVAL;
+    }
 
     /* Write register to storage */
     if(!register_storage_write_holding_registers(storage, address, 1, &value)) { return UTIL_EBOUNDS; }
 
-    /* Build response header (echo request as response) */
-    modbus_build_response_header(response, req_header, 5); /* FC + address + value */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, address, value */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_WRITE_SINGLE_REGISTER)
-       || !buf_write_u16_be(response, "address", address) || !buf_write_u16_be(response, "value", value)) {
-        return UTIL_EBOUNDS;
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_WRITE_SINGLE_REGISTER)
+       || !pb_write_u16_be(response, "address", address) || !pb_write_u16_be(response, "value", value)) {
+        return pb_get_err(response);
     }
+
+    /* Build response header (echo request as response) */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Wrote single register at address %u = 0x%04X", address, value);
     return UTIL_OK;
 }
 
 /* Handle FC 0x0F: Write Multiple Coils */
-static util_err_t handle_write_multiple_coils(data_reader_t *request, packet_builder_t *response, mbap_header_t *req_header,
-                                              register_storage_t *storage) {
+static util_err_t handle_write_multiple_coils(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
+                                              const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t start_address, count;
     uint8_t byte_count;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "start_address", &start_address) || !buf_read_u16_be(request, "count", &count)
-       || !buf_read_u8(request, "byte_count", &byte_count)) {
+    if(!data_reader_read_u16_be(request, "start_address", &start_address) || !data_reader_read_u16_be(request, "count", &count)
+       || !data_reader_read_u8(request, "byte_count", &byte_count)) {
         return UTIL_EINVAL;
     }
 
@@ -397,37 +447,41 @@ static util_err_t handle_write_multiple_coils(data_reader_t *request, packet_bui
     if(count == 0 || count > MODBUS_MAX_WRITE_COILS || byte_count != ((count + 7) / 8)) { return UTIL_EINVAL; }
 
     /* Read coil data from request */
-    uint8_t *coil_data = buf_read_ptr(request);
-    if(!coil_data || buf_read_size(request) < byte_count) { return UTIL_EINVAL; }
+    uint8_t coil_data[MODBUS_MAX_WRITE_COILS / 8];
+    if(!data_reader_read_bytes(request, "coil_data", coil_data, byte_count)) {
+        return UTIL_EINVAL;
+    }
 
     /* Write coils to storage */
     if(!register_storage_write_coils(storage, start_address, count, coil_data)) { return UTIL_EBOUNDS; }
 
-    /* Advance read cursor */
-    buf_read_advance(request, byte_count);
-
-    /* Build response header */
-    modbus_build_response_header(response, req_header, 5); /* FC + start_address + count */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, start_address, count */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_WRITE_MULTIPLE_COILS)
-       || !buf_write_u16_be(response, "start_address", start_address) || !buf_write_u16_be(response, "count", count)) {
-        return UTIL_EBOUNDS;
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_WRITE_MULTIPLE_COILS)
+       || !pb_write_u16_be(response, "start_address", start_address) || !pb_write_u16_be(response, "count", count)) {
+        return pb_get_err(response);
     }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Wrote %u coils starting at address %u", count, start_address);
     return UTIL_OK;
 }
 
 /* Handle FC 0x10: Write Multiple Registers */
-static util_err_t handle_write_multiple_registers(data_reader_t *request, packet_builder_t *response, mbap_header_t *req_header,
-                                                  register_storage_t *storage) {
+static util_err_t handle_write_multiple_registers(data_reader_t *request, packet_builder_t *response, pb_segment_id_t payload_seg_id,
+                                                  const mbap_header_t *req_header, register_storage_t *storage) {
     uint16_t start_address, count;
     uint8_t byte_count;
 
     /* Read request parameters */
-    if(!buf_read_u16_be(request, "start_address", &start_address) || !buf_read_u16_be(request, "count", &count)
-       || !buf_read_u8(request, "byte_count", &byte_count)) {
+    if(!data_reader_read_u16_be(request, "start_address", &start_address) || !data_reader_read_u16_be(request, "count", &count)
+       || !data_reader_read_u8(request, "byte_count", &byte_count)) {
         return UTIL_EINVAL;
     }
 
@@ -440,7 +494,7 @@ static util_err_t handle_write_multiple_registers(data_reader_t *request, packet
 
     /* Read register values from request (big-endian) */
     for(uint16_t i = 0; i < count; i++) {
-        if(!buf_read_u16_be(request, "register", &register_data[i])) {
+        if(!data_reader_read_u16_be(request, "register", &register_data[i])) {
             free(register_data);
             return UTIL_EINVAL;
         }
@@ -452,14 +506,19 @@ static util_err_t handle_write_multiple_registers(data_reader_t *request, packet
 
     if(!success) { return UTIL_EBOUNDS; }
 
-    /* Build response header */
-    modbus_build_response_header(response, req_header, 5); /* FC + start_address + count */
+    /* Set default segment to payload before writing */
+    if(!pb_set_default_seg_id(response, payload_seg_id)) {
+        return pb_get_err(response);
+    }
 
     /* Write response: FC, start_address, count */
-    if(!buf_write_u8(response, "function_code", MODBUS_FC_WRITE_MULTIPLE_REGISTERS)
-       || !buf_write_u16_be(response, "start_address", start_address) || !buf_write_u16_be(response, "count", count)) {
-        return UTIL_EBOUNDS;
+    if(!pb_write_u8(response, "function_code", MODBUS_FC_WRITE_MULTIPLE_REGISTERS)
+       || !pb_write_u16_be(response, "start_address", start_address) || !pb_write_u16_be(response, "count", count)) {
+        return pb_get_err(response);
     }
+
+    /* Build response header */
+    modbus_build_response_header(response, req_header, payload_seg_id);
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Wrote %u registers starting at address %u", count, start_address);
     return UTIL_OK;
@@ -467,9 +526,9 @@ static util_err_t handle_write_multiple_registers(data_reader_t *request, packet
 
 /* Main request dispatcher */
 util_err_t modbus_process_request(uint8_t function_code, data_reader_t *request, packet_builder_t *response,
-                                  pb_segment_id_t payload_seg_id, mbap_header_t *req_header, register_storage_t *storage) {
+                                  pb_segment_id_t payload_seg_id, const mbap_header_t *req_header, register_storage_t *storage) {
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Processing Modbus request with function code: 0x%02X", function_code);
-    pdlog_bytes(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, request);
+    pdlog_dr_bytes(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, request);
 
     if(!request || !response || !req_header || !storage) {
         pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_WARN, "NULL pointer(s) to process Modbus request");
@@ -486,7 +545,7 @@ util_err_t modbus_process_request(uint8_t function_code, data_reader_t *request,
 
         case MODBUS_FC_READ_DISCRETE_INPUTS:
             pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Handling Read Discrete Inputs request");
-            err = handle_read_discrete_inputs(request, response, req_header, storage);
+            err = handle_read_discrete_inputs(request, response, payload_seg_id, req_header, storage);
             break;
 
         case MODBUS_FC_READ_HOLDING_REGISTERS:
@@ -528,7 +587,7 @@ util_err_t modbus_process_request(uint8_t function_code, data_reader_t *request,
     if(err != UTIL_OK) { modbus_build_exception_response(response, req_header, function_code, err); }
 
     pdlog(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, "Built Modbus response:");
-    pdlog_bytes(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, response);
+    pdlog_pb_bytes(LOG_MODULE_MODBUS_PROTOCOL, LOG_LEVEL_DETAIL, response, pb_get_compacted_segment_id(response));
 
     return err;
 }

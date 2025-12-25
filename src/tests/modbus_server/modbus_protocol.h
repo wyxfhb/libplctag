@@ -44,6 +44,10 @@
 /* Modbus TCP Application Protocol (MBAP) Header */
 #define MBAP_HEADER_SIZE 7
 
+/* Modbus packet builder segment IDs */
+#define MODBUS_MBAP_SEG_ID    0x01
+#define MODBUS_PAYLOAD_SEG_ID 0x02
+
 /* Modbus Function Codes */
 #define MODBUS_FC_READ_COILS 0x01
 #define MODBUS_FC_READ_DISCRETE_INPUTS 0x02
