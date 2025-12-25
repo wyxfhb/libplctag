@@ -526,7 +526,7 @@ util_err_t stream_read(socket_t sock, data_reader_t *in) {
     /* compact the buffer so that we have the maximum space available */
     if(!data_reader_compact(in)) { return data_reader_get_err(in); }
 
-    size_t capacity = data_reader_write_size(in);
+    size_t capacity = data_reader_write_space(in);
     if(capacity == 0) { return UTIL_ERESOURCE; /* No space in buffer */ }
 
     uint8_t *write_ptr = data_reader_write_ptr(in);
@@ -595,7 +595,7 @@ util_err_t dgram_receive(socket_t sock, socket_address_t *from_addr, data_reader
     /* compact the buffer so that we have the maximum space available */
     if(!data_reader_compact(in)) { return data_reader_get_err(in); }
 
-    size_t capacity = data_reader_write_size(in);
+    size_t capacity = data_reader_write_space(in);
     if(capacity == DATA_READER_INVALID_SIZE) { return data_reader_get_err(in); }
     if(capacity == 0) { return UTIL_ERESOURCE; /* No space in buffer */ }
 

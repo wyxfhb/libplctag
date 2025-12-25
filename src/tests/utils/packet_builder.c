@@ -35,8 +35,12 @@
 #include "packet_builder.h"
 #include "err.h"
 #include <string.h>
+#include <stdio.h>
 
 #define BYTE_MASK 0xFF
+
+/* Forward declaration */
+static pb_segment_id_t find_segment_index(packet_builder_t *b, pb_segment_id_t seg_id);
 
 packet_builder_t pb_init(uint8_t *mem, size_t capacity) {
     packet_builder_t b = {
@@ -113,18 +117,18 @@ size_t pb_unconsumed_size(packet_builder_t *b) {
 }
 
 
-size_t pb_compact(packet_builder_t *b, pb_segment_id_t packet_seg_id) {
-    if(!b) { return PB_INVALID_SEGMENT_SIZE; }
+bool pb_compact(packet_builder_t *b, pb_segment_id_t packet_seg_id) {
+    if(!b) { return false; }
 
-    if(b->err) { return PB_INVALID_SEGMENT_SIZE; }
+    if(b->err) { return false; }
 
     if(b->compacted) {
         /* already compacted - check if trying to use different segment ID */
         if(b->segment_ids[0] != packet_seg_id) {
             b->err = UTIL_EDUPLICATE;
-            return PB_INVALID_SEGMENT_SIZE;
+            return false;
         }
-        return pb_get_total_len(b);
+        return true;
     }
 
     size_t dest_offset = 0;
@@ -154,7 +158,7 @@ size_t pb_compact(packet_builder_t *b, pb_segment_id_t packet_seg_id) {
 
     b->compacted = true;
 
-    return dest_offset;
+    return true;
 }
 
 bool pb_consume_compacted(packet_builder_t *b, size_t size) {

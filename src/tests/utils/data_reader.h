@@ -63,16 +63,16 @@ bool data_reader_reset(data_reader_t *r);
 util_err_t data_reader_get_err(data_reader_t *r);
 bool data_reader_set_err(data_reader_t *r, util_err_t err);
 
-const char *data_reader_get_err_field(const data_reader_t *r);
+const char *data_reader_get_err_field(data_reader_t *r);
 bool data_reader_set_err_field(data_reader_t *r, const char *field_name);
 
 /* write operations for filling the buffer */
-size_t data_reader_write_space(const data_reader_t *r);
+size_t data_reader_write_space(data_reader_t *r);
 uint8_t *data_reader_write_ptr(data_reader_t *r);
 bool data_reader_write_advance(data_reader_t *r, size_t len);
 
 /* buffer management */
-size_t data_reader_read_size(const data_reader_t *r);
+size_t data_reader_read_size(data_reader_t *r);
 bool data_reader_compact(data_reader_t *r);
 
 /* data accessors*/
@@ -110,7 +110,7 @@ void log_dr_bytes_impl(const char *func, int line_num, log_level_t lvl, log_modu
  * @param level Log level
  * @param buf Buffer to dump
  */
-#define pdlog_dr_bytes(modules, level, buf)                                                           \
-    do {                                                                                              \
-        if(log_is_enabled(modules, level)) log_bytes_impl(__func__, __LINE__, level, modules, (buf)); \
+#define pdlog_dr_bytes(modules, level, buf)                                                              \
+    do {                                                                                                 \
+        if(log_is_enabled(modules, level)) log_dr_bytes_impl(__func__, __LINE__, level, modules, (buf)); \
     } while(0)

@@ -34,6 +34,7 @@
 #include "data_reader.h"
 #include "err.h"
 #include <string.h>
+#include <stdio.h>
 
 data_reader_t data_reader_init(uint8_t *base, size_t capacity) {
     data_reader_t r = {.base = base, .capacity = capacity, .read_pos = 0, .write_pos = 0, .err = UTIL_OK};
@@ -51,7 +52,7 @@ bool data_reader_reset(data_reader_t *r) {
 }
 
 
-util_err_t data_reader_get_err(const data_reader_t *r) { return r ? r->err : UTIL_ENULL; }
+util_err_t data_reader_get_err(data_reader_t *r) { return r ? r->err : UTIL_ENULL; }
 
 bool data_reader_set_err(data_reader_t *r, util_err_t err) {
     if(!r) { return false; }
@@ -61,7 +62,7 @@ bool data_reader_set_err(data_reader_t *r, util_err_t err) {
     return true;
 }
 
-const char *data_reader_get_err_field(const data_reader_t *r) {
+const char *data_reader_get_err_field(data_reader_t *r) {
     if(!r) { return "--NO FIELD--"; }
     return r->err_field;
 }
@@ -72,7 +73,7 @@ bool data_reader_set_err_field(data_reader_t *r, const char *field_name) {
     return true;
 }
 
-size_t data_reader_write_space(const data_reader_t *r) {
+size_t data_reader_write_space(data_reader_t *r) {
     if(!r) { return DATA_READER_INVALID_SIZE; }
     if(r->write_pos > r->capacity) { return 0; }
     return r->capacity - r->write_pos;
@@ -97,7 +98,7 @@ bool data_reader_write_advance(data_reader_t *r, size_t len) {
     return true;
 }
 
-size_t data_reader_read_size(const data_reader_t *r) {
+size_t data_reader_read_size(data_reader_t *r) {
     if(!r) { return DATA_READER_INVALID_SIZE; }
 
     if(r->read_pos > r->write_pos) { return 0; }
@@ -152,7 +153,7 @@ bool data_reader_read_u16_le(data_reader_t *r, const char *field_name, uint16_t 
         return false;
     }
 
-    const uint8_t *p = r->base + r->read_pos;
+    uint8_t *p = r->base + r->read_pos;
     *val = (uint16_t)(p[0] | (p[1] << 8));
 
     r->read_pos += read_size;
@@ -173,7 +174,7 @@ bool data_reader_read_u32_le(data_reader_t *r, const char *field_name, uint32_t 
         return false;
     }
 
-    const uint8_t *p = r->base + r->read_pos;
+    uint8_t *p = r->base + r->read_pos;
     *val = (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
 
     r->read_pos += read_size;
@@ -194,7 +195,7 @@ bool data_reader_read_u64_le(data_reader_t *r, const char *field_name, uint64_t 
         return false;
     }
 
-    const uint8_t *p = r->base + r->read_pos;
+    uint8_t *p = r->base + r->read_pos;
     *val = (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) | ((uint64_t)p[4] << 32)
            | ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
 
@@ -216,7 +217,7 @@ bool data_reader_read_u16_be(data_reader_t *r, const char *field_name, uint16_t 
         return false;
     }
 
-    const uint8_t *p = r->base + r->read_pos;
+    uint8_t *p = r->base + r->read_pos;
     *val = (uint16_t)((p[0] << 8) | p[1]);
 
     r->read_pos += read_size;
@@ -237,7 +238,7 @@ bool data_reader_read_u32_be(data_reader_t *r, const char *field_name, uint32_t 
         return false;
     }
 
-    const uint8_t *p = r->base + r->read_pos;
+    uint8_t *p = r->base + r->read_pos;
     *val = (uint32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 
     r->read_pos += read_size;
@@ -258,7 +259,7 @@ bool data_reader_read_u64_be(data_reader_t *r, const char *field_name, uint64_t 
         return false;
     }
 
-    const uint8_t *p = r->base + r->read_pos;
+    uint8_t *p = r->base + r->read_pos;
     *val = ((uint64_t)p[0] << 56) | ((uint64_t)p[1] << 48) | ((uint64_t)p[2] << 40) | ((uint64_t)p[3] << 32)
            | ((uint64_t)p[4] << 24) | ((uint64_t)p[5] << 16) | ((uint64_t)p[6] << 8) | (uint64_t)p[7];
 
@@ -299,7 +300,7 @@ void log_dr_bytes_impl(const char *func, int line_num, log_level_t lvl, log_modu
     }
 
     size_t data_len = buf->write_pos - buf->read_pos;
-    const uint8_t *data = buf->base + buf->read_pos;
+    uint8_t *data = buf->base + buf->read_pos;
 
     if(!data || data_len == 0) {
         log_impl(func, line_num, lvl, modules, "<empty>");
