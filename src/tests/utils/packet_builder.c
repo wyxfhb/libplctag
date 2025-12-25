@@ -197,7 +197,8 @@ bool pb_set_default_seg_id(packet_builder_t *b, pb_segment_id_t seg_id) {
 
     if(b->err) { return false; }
 
-    if(seg_id >= b->num_segments) {
+    pb_segment_id_t seg_index = find_segment_index(b, seg_id);
+    if(seg_index == PB_INVALID_SEGMENT_ID) {
         b->err = UTIL_ENOTFOUND;
         return false;
     }
