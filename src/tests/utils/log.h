@@ -40,7 +40,6 @@ extern "C" {
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include "buf.h"
 
 typedef enum {
     LOG_LEVEL_NONE = 0,

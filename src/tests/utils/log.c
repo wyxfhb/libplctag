@@ -40,7 +40,6 @@
 #include <string.h>
 #include <time.h>
 #include "log.h"
-#include "buf.h"
 #include "utils.h"
 #if defined(_WIN32) && !defined(_MSC_VER)
 #    include <windows.h>
