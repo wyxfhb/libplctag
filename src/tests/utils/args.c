@@ -154,7 +154,7 @@ static char **read_config_file(const char *filename, int *arg_count) {
     }
 
     /* Allocate array for arguments */
-    char **argv = malloc(sizeof(char *) * (count + 1)); /* +1 for NULL terminator */
+    char **argv = malloc(sizeof(char *) * (size_t)((count + 1))); /* +1 for NULL terminator */
     if(!argv) {
         fclose(f);
         pdlog(LOG_MODULE_ARGS, LOG_LEVEL_ERROR, "args: failed to allocate memory for config file arguments");
@@ -215,7 +215,7 @@ static char **merge_config_and_argv(const char *config_filename, int argc, char 
     /* Total size: program name + config args + original args (minus program name) */
     int total_count = 1 + config_argc + (argc - 1);
 
-    char **merged = malloc(sizeof(char *) * total_count);
+    char **merged = malloc(sizeof(char *) * (size_t)total_count);
     if(!merged) {
         pdlog(LOG_MODULE_ARGS, LOG_LEVEL_ERROR, "args: failed to allocate merged argv");
         if(config_argv) {
