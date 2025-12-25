@@ -411,6 +411,12 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
               "MBAP Header - Transaction ID: %u, Protocol ID: %u, Length: %u, Unit ID: %u", client->mbap_header.transaction_id,
               client->mbap_header.protocol_id, client->mbap_header.length, client->mbap_header.unit_id);
 
+        /* Extract function code before unit ID check so we can use it in exception response */
+        if(!data_reader_read_u8(&client->recv_buf, "function_code", &function_code)) {
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to read function code");
+            break;
+        }
+
         /* Check unit ID against server's configured unit ID */
         if(client->mbap_header.unit_id != client->server->unit_id) {
             pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Unit ID mismatch: received %u, server is %u",
@@ -436,7 +442,7 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
             }
 
             /* Send exception response for unit ID mismatch */
-            modbus_build_exception_response(&client->send_buf, &client->mbap_header, 0x00, UTIL_EINVAL);
+            modbus_build_exception_response(&client->send_buf, &client->mbap_header, function_code, UTIL_EINVAL);
 
             /* Compact and send the exception response */
             if(!pb_compact(&client->send_buf, PB_DEFAULT_COMPACTED_SEGMENT_ID)) {
@@ -452,14 +458,8 @@ static void client_handler(coro_task_handle_t handle, socket_t fd, void *context
                 pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to send exception response: %s", util_err_str(err));
             }
 
-            /* Continue to next request */
-            memset(&client->timing, 0, sizeof(client->timing));
-            continue;
-        }
-
-        /* Extract function code */
-        if(!data_reader_read_u8(&client->recv_buf, "function_code", &function_code)) {
-            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_WARN, "Failed to read function code");
+            /* Close connection - client is misconfigured with wrong unit ID */
+            pdlog(LOG_MODULE_MODBUS_CORO_CLIENT, LOG_LEVEL_DETAIL, "Closing connection due to unit ID mismatch");
             break;
         }
 
