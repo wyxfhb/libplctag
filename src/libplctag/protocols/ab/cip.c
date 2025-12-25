@@ -110,7 +110,6 @@ static int parse_link_address(const char *path, size_t *path_index, uint8_t port
                               int *is_dhp, uint8_t *dhp_src, uint8_t *dhp_dest) {
     size_t p_idx = *path_index;
     size_t c_idx = *conn_path_index;
-    // int rc = PLCTAG_STATUS_OK;
 
     /* Skip spaces */
     while(path[p_idx] == ' ') { p_idx++; }
