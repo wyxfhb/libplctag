@@ -37,6 +37,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "err.h"
 #include "log.h"
 
 /*
@@ -52,7 +53,7 @@ typedef struct data_reader_s {
     size_t read_pos;
     size_t write_pos;
     const char *err_field;
-    int err;
+    util_err_t err;
 } data_reader_t;
 
 /* initialization */

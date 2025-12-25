@@ -37,6 +37,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "err.h"
 #include "log.h"
 
 
@@ -65,7 +66,7 @@ struct packet_builder_s {
     } limits[PB_MAX_SEGMENTS];                    /* FIXME - make this a defined value! */
     pb_segment_id_t segment_ids[PB_MAX_SEGMENTS]; /* Segment IDs */
     const char *err_field;
-    int err;
+    util_err_t err;
     uint8_t num_segments;
     pb_segment_id_t default_write_seg_id;
     bool compacted;
@@ -260,7 +261,7 @@ size_t pb_sum_segment_len(packet_builder_t *b, pb_segment_id_t start_seg_id);
 
 /* Error handling */
 util_err_t pb_get_err(packet_builder_t *b);
-bool pb_set_err(packet_builder_t *b, int err);
+bool pb_set_err(packet_builder_t *b, util_err_t err);
 const char *pb_get_err_field(packet_builder_t *b);
 bool pb_set_err_field(packet_builder_t *b, const char *field_name);
 

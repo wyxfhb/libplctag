@@ -43,15 +43,13 @@
 static pb_segment_id_t find_segment_index(packet_builder_t *b, pb_segment_id_t seg_id);
 
 packet_builder_t pb_init(uint8_t *mem, size_t capacity) {
-    packet_builder_t b = {
-        .base = mem,
-        .capacity = capacity,
-        .num_segments = 0,
-        .compacted = false,
-        .err = 0,
-        .default_write_seg_id = PB_INVALID_SEGMENT_ID,
-        .err_field = NULL
-    };
+    packet_builder_t b = {.base = mem,
+                          .capacity = capacity,
+                          .num_segments = 0,
+                          .compacted = false,
+                          .err = 0,
+                          .default_write_seg_id = PB_INVALID_SEGMENT_ID,
+                          .err_field = NULL};
     /* Initialize all segment IDs to invalid */
     for(int i = 0; i < PB_MAX_SEGMENTS; i++) {
         b.segment_ids[i] = PB_INVALID_SEGMENT_ID;
@@ -101,9 +99,7 @@ size_t pb_get_total_len(packet_builder_t *b) {
     if(!b) { return PB_INVALID_SEGMENT_SIZE; }
 
     size_t total = 0;
-    for(uint8_t i = 0; i < b->num_segments; i++) {
-        total += b->limits[i].len;
-    }
+    for(uint8_t i = 0; i < b->num_segments; i++) { total += b->limits[i].len; }
 
     return total;
 }
@@ -276,7 +272,7 @@ util_err_t pb_get_err(packet_builder_t *b) {
     return b->err;
 }
 
-bool pb_set_err(packet_builder_t *b, int err) {
+bool pb_set_err(packet_builder_t *b, util_err_t err) {
     if(!b) { return false; }
 
     b->err = err;
@@ -301,9 +297,7 @@ static pb_segment_id_t find_segment_index(packet_builder_t *b, pb_segment_id_t s
     if(!b) { return PB_INVALID_SEGMENT_ID; }
 
     for(uint8_t i = 0; i < b->num_segments; i++) {
-        if(b->segment_ids[i] == seg_id) {
-            return i;
-        }
+        if(b->segment_ids[i] == seg_id) { return i; }
     }
 
     return PB_INVALID_SEGMENT_ID;
@@ -393,7 +387,7 @@ bool pb_write_u16_le(packet_builder_t *b, const char *field_name, uint16_t val) 
 
     size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
     uint8_t *p = b->base + offset;
-    for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+    for(size_t i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
 
     b->limits[seg_index].len += write_size;
 
@@ -408,7 +402,7 @@ bool pb_write_u32_le(packet_builder_t *b, const char *field_name, uint32_t val) 
 
     size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
     uint8_t *p = b->base + offset;
-    for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+    for(size_t i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
 
     b->limits[seg_index].len += write_size;
 
@@ -423,7 +417,7 @@ bool pb_write_u64_le(packet_builder_t *b, const char *field_name, uint64_t val) 
 
     size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
     uint8_t *p = b->base + offset;
-    for(int i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+    for(size_t i = 0; i < write_size; i++) { p[i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
 
     b->limits[seg_index].len += write_size;
 
@@ -438,7 +432,7 @@ bool pb_write_u16_be(packet_builder_t *b, const char *field_name, uint16_t val) 
 
     size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
     uint8_t *p = b->base + offset;
-    for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+    for(size_t i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
 
     b->limits[seg_index].len += write_size;
 
@@ -453,7 +447,7 @@ bool pb_write_u32_be(packet_builder_t *b, const char *field_name, uint32_t val) 
 
     size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
     uint8_t *p = b->base + offset;
-    for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+    for(size_t i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
 
     b->limits[seg_index].len += write_size;
 
@@ -468,7 +462,7 @@ bool pb_write_u64_be(packet_builder_t *b, const char *field_name, uint64_t val) 
 
     size_t offset = calc_segment_offset_by_index(b, seg_index) + b->limits[seg_index].len;
     uint8_t *p = b->base + offset;
-    for(int i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
+    for(size_t i = 0; i < write_size; i++) { p[(write_size - 1) - i] = (uint8_t)((val >> (i * 8)) & BYTE_MASK); }
 
     b->limits[seg_index].len += write_size;
 
@@ -499,31 +493,31 @@ bool pb_write_bytes(packet_builder_t *b, const char *field_name, uint8_t *data, 
  * @param buf buffer containing the bytes to log
  * @param seg_id segment ID to dump
  */
-void log_pb_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, packet_builder_t *buf,
+void log_pb_bytes_impl(const char *func, int line_num, log_level_t lvl, log_module_mask_t modules, packet_builder_t *pb,
                        pb_segment_id_t seg_id) {
-    if(!buf) {
+    if(!pb) {
         log_impl(func, line_num, lvl, modules, "<null>");
         return;
     }
 
-    if(!buf->base) {
+    if(!pb->base) {
         log_impl(func, line_num, lvl, modules, "<null base>");
         return;
     }
 
     /* Find the segment with this ID */
-    pb_segment_id_t seg_index = find_segment_index(buf, seg_id);
+    pb_segment_id_t seg_index = find_segment_index(pb, seg_id);
     if(seg_index == PB_INVALID_SEGMENT_ID) {
         log_impl(func, line_num, lvl, modules, "<invalid segment ID>");
         return;
     }
 
     /* get the offset to the segment */
-    size_t offset = calc_segment_offset_by_index(buf, seg_index);
+    size_t offset = calc_segment_offset_by_index(pb, seg_index);
 
-    uint8_t *data = buf->base + offset;
+    uint8_t *data = pb->base + offset;
 
-    size_t data_len = buf->limits[seg_index].len;
+    size_t data_len = pb->limits[seg_index].len;
     if(data_len == 0) {
         log_impl(func, line_num, lvl, modules, "<empty>");
         return;
