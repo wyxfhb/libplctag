@@ -93,7 +93,7 @@ sleep 2
 echo "Phase 1: Modbus server $SCRIPT_DIR/modbus_server."
 
 echo "Starting Modbus server $SCRIPT_DIR/modbus_server."
-$TEST_DIR/modbus_server --listen=127.0.0.1:1502 --listen=127.0.0.1:2502 --debug=DETAIL > "$LOG_DIR/modbus_server.log" 2>&1 &
+$TEST_DIR/modbus_server --listen=127.0.0.1:1502 --listen=127.0.0.1:2502 --debug=INFO > "$LOG_DIR/modbus_server.log" 2>&1 &
 MODBUS_PID=$!
 if [ $MODBUS_PID -le 0 ]; then
     # echo "FAILURE"
